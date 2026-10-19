@@ -37,7 +37,9 @@ In enforce mode allow passes, ask goes to Hermes' own approval prompt, and block
 
 ## Pi / Oh My Pi
 
-The binary embeds `index.ts` and `policy.mjs` into `~/.omp/agent/extensions/decider/` (or uses the detected `~/.pi` base). The extension is host-side TypeScript and calls the server's `/decide` endpoint. The integration has its own behavior and failure policy; verify in an isolated Pi session. `nod hook pi` itself has no decision protocol because Pi loads the extension in-process. Remove with `nod hooks remove --host pi --yes`.
+The binary embeds `index.ts`, `policy.mjs` and `audit.mjs` into `~/.omp/agent/extensions/decider/` (or uses the detected `~/.pi` base). The extension is host-side TypeScript and calls the server's `/decide` endpoint. The integration has its own behavior and failure policy; verify in an isolated Pi session. `nod hook pi` itself has no decision protocol because Pi loads the extension in-process. Remove with `nod hooks remove --host pi --yes`.
+
+**Audit trail.** The extension writes nod's audit trail itself, to `omp.jsonl` in the audit directory (the same file for Pi and Oh My Pi), in the format and hash chain of the Go writer, so `nod audit verify` and `nod decisions` read it. It writes one line for every tool call it sees, before the call runs or is blocked: judged calls with the verdict, the source (`error` when the server failed; the extension then blocks) and `answer` (what happened: `allow`, `block`, `ask-approved`, `ask-declined`, `ask-no-ui`); with the gate off (`DECIDER_PI=off`, `/decider off`) each call is logged as `unchecked` with source `disabled` (the path for file tools, the command for bash, otherwise the input JSON clipped to 500 characters). Pi has no nod settings file, so the extension reads only its own environment: `NOD_AUDIT_DIR` (absolute; default `$XDG_STATE_HOME/nod/audit`, else `~/.local/state/nod/audit`; a config file's `audit_dir` is not seen) and `NOD_AUDIT_COMMANDS` (`full` default, `preview`, `hash`). Commands are redacted with the same patterns as the Go side. Without flock, processes serialise on an `omp.jsonl.lock.d` directory. A write failure never changes a verdict; it shows one warning per session.
 
 ## opencode
 
@@ -55,4 +57,4 @@ Nothing here has been run against a real opencode: the hook names, the plugin ex
 
 ## Verdicts
 
-CLI classifications and Claude hook verdicts use `decisions.jsonl` in the runtime directory, which `nod decisions` reads. Hermes writes its plugin audit to `hermes-shadow.jsonl`; Pi writes `omp-decisions.jsonl` under local share by default and those Pi records include truncated tool input. See [PRIVACY.md](PRIVACY.md).
+CLI classifications and Claude hook verdicts use `decisions.jsonl` in the runtime directory, which `nod decisions` reads. Hermes writes its plugin audit to `hermes-shadow.jsonl`; Pi writes the shared audit trail (`omp.jsonl`, see above), which `nod decisions` reads. See [PRIVACY.md](PRIVACY.md).
