@@ -12,7 +12,7 @@
 // block and ask throw (OpenCode turns the error into the tool result; a plugin cannot open a prompt).
 // Any failure counts as ask, never as allow.
 //
-// The default export is an object {id, server} on purpose: OpenCode calls EVERY export of a module
+// The default export is an object {id, server, setup} on purpose: OpenCode calls EVERY export of a module
 // without it as a plugin, and the named helper exports below exist only for the unit tests.
 // Plain ESM, Node/Bun built-ins only, no build step.
 
@@ -433,4 +433,7 @@ export async function server(input) {
   return createNod({ client: input.client, directory: input.directory, config }).hooks
 }
 
-export default { id: "nod", server }
+// OpenCode v2 rejects a plugin without "an id and an effect or setup function" (error: "Plugin must
+// export a default definition with an id and an effect or setup function"). The hooks come from
+// server(); setup() has nothing to prepare.
+export default { id: "nod", server, setup() {} }

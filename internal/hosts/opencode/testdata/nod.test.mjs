@@ -142,6 +142,8 @@ test("loadConfig defaults, file values and env overrides", () => {
 test("default export is an OpenCode v1 plugin object whose server() returns the hooks", async () => {
   assert.equal(plugin.id, "nod")
   assert.equal(typeof plugin.server, "function")
+  // OpenCode v2 refuses a plugin definition that has an id but neither setup nor effect.
+  assert.ok(typeof plugin.setup === "function" || typeof plugin.effect === "function", "needs setup or effect")
   const hooks = await plugin.server({ client: fakeClient(), directory: "/w" })
   assert.equal(typeof hooks["tool.execute.before"], "function")
   assert.equal(typeof hooks["chat.message"], "function")
