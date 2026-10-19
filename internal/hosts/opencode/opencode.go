@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/MQ37/nod/internal/api"
+	"github.com/MQ37/nod/internal/decisionlog"
 	"github.com/MQ37/nod/internal/hosts"
 	"github.com/MQ37/nod/internal/hosts/assets"
 )
@@ -23,7 +24,6 @@ const (
 	asset       = "opencode/nod.js"
 	marker      = "// nod OpenCode plugin (managed by nod"
 	managedBy   = "nod"
-	logName     = "opencode-decisions.jsonl"
 	reviewAgent = "agent"
 )
 
@@ -35,6 +35,9 @@ type Settings struct {
 	Review    string   `json:"review"`
 	TimeoutMS int      `json:"timeout_ms"`
 	Tools     []string `json:"tools"`
+	// The audit trail: the plugin appends to <AuditDir>/opencode.jsonl (the decisionlog format).
+	AuditDir      string `json:"audit_dir,omitempty"`
+	AuditCommands string `json:"audit_commands,omitempty"` // full | preview | hash
 }
 
 // Adapter implements hosts.Host.
@@ -86,8 +89,18 @@ func agentReview(opts hosts.Options) bool {
 	return strings.EqualFold(strings.TrimSpace(opts.Review), reviewAgent)
 }
 
+// auditCommands normalises the command text level like the plugin does: unknown or empty is full.
+func auditCommands(v string) string {
+	switch l := strings.ToLower(strings.TrimSpace(v)); l {
+	case decisionlog.CommandsPreview, decisionlog.CommandsHash:
+		return l
+	}
+	return decisionlog.CommandsFull
+}
+
 func (a *Adapter) settings(opts hosts.Options) []byte {
-	s := Settings{ManagedBy: managedBy, URL: a.Env.URL, Mode: a.Env.CurrentMode(), Review: "server", TimeoutMS: 15000, Tools: []string{"bash", "shell"}}
+	s := Settings{ManagedBy: managedBy, URL: a.Env.URL, Mode: a.Env.CurrentMode(), Review: "server", TimeoutMS: 15000, Tools: []string{"bash", "shell"},
+		AuditDir: a.Env.AuditDir, AuditCommands: auditCommands(a.Env.AuditCommands)}
 	if agentReview(opts) {
 		s.Review, s.TimeoutMS = reviewAgent, 60000 // a chat-model request takes longer than the Decider
 	}
@@ -112,7 +125,8 @@ func (a *Adapter) PlanInstall(opts hosts.Options) (hosts.Plan, error) {
 	}
 	plan.Steps = append(plan.Steps, st)
 	plan.Notes = append(plan.Notes,
-		"restart OpenCode: it loads plugins at start; NOD_URL / NOD_MODE / NOD_REVIEW in its environment override nod.json",
+		"restart OpenCode: it loads plugins at start; NOD_URL / NOD_MODE / NOD_REVIEW / NOD_AUDIT_COMMANDS in its environment override nod.json",
+		"audit trail: every tool call OpenCode runs (gated or not) is appended to "+filepath.Join(a.Env.AuditDir, Name+".jsonl")+"; check it with `nod audit verify`",
 		"enforce: allow runs the call; block and ask fail the tool call with a message (an OpenCode plugin cannot open an approval prompt, so ask tells the model to get the user's explicit confirmation first); any failure counts as ask")
 	if agentReview(opts) {
 		plan.Notes = append(plan.Notes, "review agent: every gated call costs one extra request to the session's own model, billed to the same account, in a hidden child session that is deleted afterwards")
@@ -192,12 +206,12 @@ func (a *Adapter) Status() hosts.Status {
 		}
 		s.Detail = "review: " + review
 	}
-	// The plugin logs to $XDG_RUNTIME_DIR/nod (the runtime dir) or, without it, to the temp dir.
-	for _, p := range []string{filepath.Join(a.Env.RuntimeDir, logName), filepath.Join(os.TempDir(), "nod", logName)} {
-		if st, err := os.Stat(p); err == nil && st.ModTime().After(s.LastVerdict) {
-			s.LastVerdict = st.ModTime()
-		}
+	// The plugin appends to the audit dir written in nod.json (the same dir as Env.AuditDir when nod wrote it).
+	auditEnv := a.Env
+	if ok && set.AuditDir != "" && filepath.IsAbs(set.AuditDir) {
+		auditEnv.AuditDir = set.AuditDir
 	}
+	s.LastVerdict = auditEnv.LastVerdict(Name)
 	return s
 }
 

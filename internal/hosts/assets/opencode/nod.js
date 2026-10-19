@@ -1,21 +1,26 @@
 // nod OpenCode plugin (managed by nod: `nod hooks install --host opencode`; remove with `nod hooks remove --host opencode`)
 //
 // Gates OpenCode tool calls (by default only `bash`) with nod. Settings come from nod.json next to
-// this file (written by nod), overridable with NOD_URL / NOD_MODE / NOD_REVIEW in the environment.
+// this file (written by nod), overridable with NOD_URL / NOD_MODE / NOD_REVIEW / NOD_AUDIT_COMMANDS.
 //
 //   review "server": POST {url}/v1/classify, the Decider on the nod server decides.
 //   review "agent":  POST {url}/v1/review/prompt, ask the agent's OWN model in a hidden child
 //                    session (no tools), then POST {url}/v1/review/verdict with its answers.
 //
-// mode "shadow" (default) never interferes: it only appends a line (no command text) to
-// <XDG_RUNTIME_DIR or tmpdir>/nod/opencode-decisions.jsonl. mode "enforce": allow runs the call,
-// block and ask throw (OpenCode turns the error into the tool result; a plugin cannot open a prompt).
-// Any failure counts as ask, never as allow.
+// mode "shadow" (default) never interferes. mode "enforce": allow runs the call, block and ask throw
+// (OpenCode turns the error into the tool result; a plugin cannot open a prompt). Any failure counts as
+// ask, never as allow.
+//
+// Audit trail (both modes): every tool call the hook sees gets one line in <audit dir>/opencode.jsonl,
+// the same hash-chained format as nod's Go writer (internal/decisionlog), so `nod audit verify` checks
+// it. Gated calls carry the verdict; other tools are logged as decision "unchecked". Logging never
+// changes an outcome and never throws.
 //
 // The default export is an object {id, server, setup} on purpose: OpenCode calls EVERY export of a module
 // without it as a plugin, and the named helper exports below exist only for the unit tests.
 // Plain ESM, Node/Bun built-ins only, no build step.
 
+import { createHash } from "node:crypto"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -27,6 +32,8 @@ export const DEFAULTS = Object.freeze({
   review: "server",
   timeout_ms: 15000,
   tools: ["bash", "shell"],
+  audit_dir: "", // "" = $NOD_AUDIT_DIR, else $XDG_STATE_HOME/nod/audit, else ~/.local/state/nod/audit
+  audit_commands: "full", // full | preview | hash
 })
 
 // OpenCode tool id -> the tool name nod knows and the text it judges. Keep it small and explicit.
@@ -66,21 +73,28 @@ export function loadConfig(raw, env = {}) {
   // "bash" (v1) and "shell" (v2) are the same tool: gating one gates the other.
   if (cfg.tools.includes("bash") && !cfg.tools.includes("shell")) cfg.tools.push("shell")
   if (cfg.tools.includes("shell") && !cfg.tools.includes("bash")) cfg.tools.push("bash")
+  // audit_dir is taken only when absolute; auditDir() falls back to NOD_AUDIT_DIR and the XDG default.
+  if (typeof file.audit_dir === "string" && path.isAbsolute(file.audit_dir.trim())) cfg.audit_dir = file.audit_dir.trim()
+  if (typeof file.audit_commands === "string") cfg.audit_commands = file.audit_commands
   if (env.NOD_URL) cfg.url = String(env.NOD_URL).trim()
   if (env.NOD_MODE) cfg.mode = String(env.NOD_MODE)
   if (env.NOD_REVIEW) cfg.review = String(env.NOD_REVIEW)
+  if (env.NOD_AUDIT_COMMANDS) cfg.audit_commands = String(env.NOD_AUDIT_COMMANDS)
   cfg.url = cfg.url.replace(/\/+$/, "")
   cfg.mode = cfg.mode.trim().toLowerCase() === "enforce" ? "enforce" : "shadow"
   cfg.review = cfg.review.trim().toLowerCase() === "agent" ? "agent" : "server"
+  cfg.audit_commands = auditLevel(cfg.audit_commands)
   return cfg
 }
 
+// The patterns and replacements of internal/decisionlog/redact.go. Go's \s is [\t\n\f\r ] (ASCII only),
+// so it is spelled out here to match byte for byte.
 const SECRETS = [
   [/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|$)/g, "<private-key>"],
-  [/(Authorization\s*:\s*)(?:Bearer|Basic|token|Token)?\s*[^\s'"]+/gi, "$1<redacted>"],
-  [/\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/g, "Bearer <redacted>"],
+  [/(Authorization[\t\n\f\r ]*:[\t\n\f\r ]*)(?:Bearer|Basic|token)?[\t\n\f\r ]*[^\t\n\f\r '"]+/gi, "$1<redacted>"],
+  [/\bBearer[\t\n\f\r ]+[A-Za-z0-9._~+/=-]{8,}/g, "Bearer <redacted>"],
   [/\b(?:sk-|ghp_|gho_|ghs_|ghu_|github_pat_|glpat-|xox[a-z]-|apify_api_|AKIA|ASIA|eyJ)[A-Za-z0-9_\-.]{12,}/g, "<tok>"],
-  [/\b([A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|PASS)[A-Z0-9_]*=)(?:"[^"]*"|'[^']*'|\S+)/g, "$1<v>"],
+  [/\b([A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|PASS)[A-Z0-9_]*=)(?:"[^"]*"|'[^']*'|[^\t\n\f\r ]+)/g, "$1<v>"],
 ]
 
 export function redact(s) {
@@ -232,17 +246,351 @@ export function abortable(promise, signal) {
   })
 }
 
-export function defaultLogPath(env = process.env) {
-  const base = env.XDG_RUNTIME_DIR && path.isAbsolute(env.XDG_RUNTIME_DIR) ? env.XDG_RUNTIME_DIR : os.tmpdir()
-  return path.join(base, "nod", "opencode-decisions.jsonl")
+// ---------------------------------------------------------------------------------------------
+// Audit trail. Mirrors internal/decisionlog (decisionlog.go, redact.go): one JSON object per line,
+// "prev" = sha256 hex of the exact bytes of the previous line (64 zeros for the first line ever; the
+// last line of <file>.1 when <file> is empty), rotation at 10 MiB keeping 5 files. Node has no flock:
+// processes serialise on a lock directory <file>.lock.d (mkdir is atomic), appends inside one process
+// on a promise chain.
+
+export const AUDIT = Object.freeze({
+  host: "opencode",
+  genesis: "0".repeat(64),
+  maxBytes: 10 << 20,
+  keep: 5,
+  maxCommand: 4000,
+  previewLen: 160,
+  maxArgs: 500,
+  maxReason: 300,
+  lockWaitMs: 2000,
+  lockStaleMs: 10000,
+})
+
+export function sha256Hex(s) {
+  return createHash("sha256").update(s).digest("hex")
 }
 
-function appendLog(file, rec) {
-  if (!file) return
+// hashSession is decisionlog.HashSession: a short, stable pseudonym of a session id.
+export function hashSession(id) {
+  return typeof id === "string" && id ? sha256Hex(id).slice(0, 16) : ""
+}
+
+// clipRunes counts code points, like Go's []rune, and marks a cut with "…".
+export function clipRunes(s, n) {
+  const t = typeof s === "string" ? s : String(s ?? "")
+  if (t.length <= n) return t
+  const r = Array.from(t)
+  return r.length <= n ? t : r.slice(0, n).join("") + "…"
+}
+
+export function auditLevel(v) {
+  const l = String(v ?? "").trim().toLowerCase()
+  return l === "preview" || l === "hash" ? l : "full"
+}
+
+// commandFields is decisionlog.CommandFields: {sha, text} of a command at a level (full | preview | hash).
+// sha is of the original text; text is redacted and clipped (max code points, preview 160).
+export function commandFields(cmd, level, max = AUDIT.maxCommand) {
+  if (typeof cmd !== "string" || !cmd) return { sha: "", text: "" }
+  const sha = sha256Hex(cmd)
+  const l = auditLevel(level)
+  if (l === "hash") return { sha, text: "" }
+  return { sha, text: clipRunes(redact(cmd), l === "preview" ? Math.min(AUDIT.previewLen, max) : max) }
+}
+
+// The audit directory: audit_dir from nod.json, else $NOD_AUDIT_DIR, else $XDG_STATE_HOME/nod/audit,
+// else ~/.local/state/nod/audit (absolute values only).
+export function auditDir(cfg = {}, env = {}, home = "") {
+  const abs = (v) => typeof v === "string" && v.trim() && path.isAbsolute(v.trim())
+  if (cfg && abs(cfg.audit_dir)) return cfg.audit_dir.trim()
+  if (abs(env.NOD_AUDIT_DIR)) return env.NOD_AUDIT_DIR.trim()
+  if (abs(env.XDG_STATE_HOME)) return path.join(env.XDG_STATE_HOME.trim(), "nod", "audit")
+  return path.join(home || os.homedir(), ".local", "state", "nod", "audit")
+}
+
+// What an ungated call did, in one string: the file path for file tools, else the JSON of the args.
+export function describeArgs(args) {
+  if (!args || typeof args !== "object") return typeof args === "string" ? args : ""
+  for (const k of ["filePath", "file_path"]) if (typeof args[k] === "string" && args[k]) return args[k]
   try {
-    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
-    fs.appendFileSync(file, JSON.stringify(rec) + "\n", { mode: 0o600 })
+    return JSON.stringify(args) || ""
+  } catch {
+    return ""
+  }
+}
+
+const str = (v) => (typeof v === "string" && v ? v : undefined)
+
+// formatAuditLine builds the line (no newline) with the keys and types of Go's decisionlog.Entry, in
+// its field order, empty fields omitted. Types matter: Go's Verify rejects a line that does not
+// unmarshal into Entry (ms must be an integer, rules strings, category a string).
+export function formatAuditLine(e, prev) {
+  const o = { v: 1, time: str(e.time) || new Date().toISOString() }
+  o.host = str(e.host)
+  o.session = str(e.session)
+  o.mode = str(e.mode)
+  o.review = str(e.review)
+  o.tool = typeof e.tool === "string" ? e.tool : ""
+  o.command = str(e.command)
+  o.command_sha256 = str(e.command_sha256)
+  o.decision = typeof e.decision === "string" ? e.decision : ""
+  o.source = str(e.source)
+  o.model = str(e.model)
+  const rules = Array.isArray(e.rules) ? e.rules.filter((r) => typeof r === "string") : []
+  if (rules.length) o.rules = rules
+  o.category = typeof e.category === "number" && Number.isFinite(e.category) ? String(e.category) : str(e.category)
+  const ms = Number.isFinite(e.ms) ? Math.round(e.ms) : 0
+  if (ms > 0) o.ms = ms
+  o.error = str(e.error)
+  o.cwd = str(e.cwd)
+  o.reason = str(e.reason)
+  o.prev = prev
+  return JSON.stringify(o) // undefined values are dropped
+}
+
+function defaultWarn(msg) {
+  try {
+    process.stderr.write(msg + "\n")
   } catch {}
+}
+
+// createAuditWriter returns {file, append(entry) -> Promise<boolean>}. append never rejects; the first
+// failure is reported once through warn. opts: {file, fs, maxBytes, keep, lockWaitMs, lockStaleMs,
+// nowMs, sleep, warn} (everything but file is for tests).
+export function createAuditWriter(opts) {
+  const file = opts.file
+  const fsx = opts.fs || fs
+  const maxBytes = opts.maxBytes ?? AUDIT.maxBytes
+  const keep = opts.keep > 0 ? opts.keep : AUDIT.keep
+  const lockWaitMs = opts.lockWaitMs ?? AUDIT.lockWaitMs
+  const lockStaleMs = opts.lockStaleMs ?? AUDIT.lockStaleMs
+  const nowMs = opts.nowMs || Date.now
+  const sleep = opts.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)))
+  const warn = opts.warn || defaultWarn
+  const lock = file + ".lock.d"
+  let tail = Promise.resolve()
+  let warned = false
+
+  function lastLine(fd, size) {
+    if (!size) return null
+    const start = Math.max(0, size - (1 << 20))
+    const buf = Buffer.alloc(size - start)
+    let off = 0
+    while (off < buf.length) {
+      const n = fsx.readSync(fd, buf, off, buf.length - off, start + off)
+      if (!n) break
+      off += n
+    }
+    let end = off
+    while (end > 0 && buf[end - 1] === 0x0a) end--
+    const nl = buf.lastIndexOf(0x0a, end - 1)
+    return buf.subarray(nl + 1, end)
+  }
+
+  function lastLineOf(p) {
+    let fd
+    try {
+      fd = fsx.openSync(p, "r")
+    } catch {
+      return null
+    }
+    try {
+      return lastLine(fd, fsx.fstatSync(fd).size)
+    } catch {
+      return null
+    } finally {
+      try {
+        fsx.closeSync(fd)
+      } catch {}
+    }
+  }
+
+  function rotate() {
+    try {
+      fsx.unlinkSync(`${file}.${keep}`)
+    } catch {}
+    for (let i = keep - 1; i >= 1; i--) {
+      try {
+        fsx.renameSync(`${file}.${i}`, `${file}.${i + 1}`)
+      } catch {}
+    }
+    try {
+      fsx.renameSync(file, `${file}.1`)
+    } catch {}
+  }
+
+  function open() {
+    const fd = fsx.openSync(file, "a+", 0o600)
+    try {
+      fsx.fchmodSync(fd, 0o600)
+    } catch (err) {
+      fsx.closeSync(fd)
+      throw err
+    }
+    return fd
+  }
+
+  async function acquire() {
+    const start = nowMs()
+    for (;;) {
+      try {
+        fsx.mkdirSync(lock, { mode: 0o700 })
+        return
+      } catch (err) {
+        if (!err || err.code !== "EEXIST") throw err
+      }
+      try {
+        // A lock older than lockStaleMs belongs to a crashed writer: take it over.
+        if (nowMs() - fsx.statSync(lock).mtimeMs > lockStaleMs) {
+          fsx.rmdirSync(lock)
+          continue
+        }
+      } catch (err) {
+        if (err && err.code === "ENOENT") continue // released meanwhile
+      }
+      if (nowMs() - start > lockWaitMs) throw new Error("audit lock is busy")
+      await sleep(2 + Math.floor(Math.random() * 8))
+    }
+  }
+
+  function writeLocked(entry) {
+    let fd = open()
+    try {
+      const size = fsx.fstatSync(fd).size
+      const last = lastLine(fd, size)
+      let prev = AUDIT.genesis
+      if (last && last.length) prev = sha256Hex(last)
+      else {
+        const l = lastLineOf(file + ".1") // a new file continues the chain of its rotated predecessor
+        if (l && l.length) prev = sha256Hex(l)
+      }
+      const buf = Buffer.from(formatAuditLine(entry, prev) + "\n", "utf8")
+      if (maxBytes > 0 && size > 0 && size + buf.length > maxBytes) {
+        fsx.closeSync(fd)
+        fd = -1
+        rotate()
+        fd = open() // prev stays the hash of the last line of the file just rotated away
+      }
+      let off = 0
+      while (off < buf.length) off += fsx.writeSync(fd, buf, off, buf.length - off)
+    } finally {
+      if (fd >= 0) fsx.closeSync(fd)
+    }
+  }
+
+  async function appendOnce(entry) {
+    fsx.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
+    await acquire()
+    try {
+      writeLocked(entry)
+    } finally {
+      try {
+        fsx.rmdirSync(lock)
+      } catch {}
+    }
+  }
+
+  function append(entry) {
+    const run = tail
+      .then(() => appendOnce(entry))
+      .then(
+        () => true,
+        (err) => {
+          if (!warned) {
+            warned = true
+            try {
+              warn(`nod: cannot write the audit trail ${file}: ${short(err)}`)
+            } catch {}
+          }
+          return false
+        },
+      )
+    tail = run // never rejects
+    return run
+  }
+
+  return { file, append }
+}
+
+// One writer per file per process, so every hook instance shares the in-process chain.
+const writers = new Map()
+export function sharedAuditWriter(file) {
+  if (!writers.has(file)) writers.set(file, createAuditWriter({ file }))
+  return writers.get(file)
+}
+
+function defaultAuditWriter(cfg) {
+  try {
+    return sharedAuditWriter(path.join(auditDir(cfg, process.env, os.homedir()), AUDIT.host + ".jsonl"))
+  } catch {
+    return null
+  }
+}
+
+// createAuditor turns hook events into audit entries. writer may be null (no audit). Never throws.
+export function createAuditor({ config, writer, now = () => new Date() }) {
+  const cfg = config || loadConfig({}, {})
+  const level = auditLevel(cfg.audit_commands)
+  async function write(build) {
+    if (!writer) return
+    try {
+      await writer.append(build())
+    } catch {}
+  }
+  const base = (sid) => ({
+    time: now().toISOString(),
+    host: AUDIT.host,
+    session: hashSession(sid),
+    mode: cfg.mode,
+    review: cfg.review === "agent" ? "agent" : "decider",
+  })
+  return {
+    // A reviewed call: v = {decision, source, reason, model, category, rules, ms, error}.
+    verdict: ({ sid, tool, command, cwd, v }) =>
+      write(() => {
+        const { sha, text } = commandFields(command, level)
+        return {
+          ...base(sid),
+          tool,
+          command: text,
+          command_sha256: sha,
+          decision: v.decision,
+          source: v.source,
+          model: v.model,
+          category: v.category,
+          rules: v.rules,
+          ms: v.ms,
+          error: v.error,
+          cwd,
+          reason: clipRunes(redact(v.reason || ""), AUDIT.maxReason),
+        }
+      }),
+    // A call nod did not judge (decision "unchecked"), or refused without a review (child session).
+    other: ({ sid, tool, args, cwd, decision = "unchecked", source = "not-gated", reason = "" }) =>
+      write(() => {
+        const desc = describeArgs(args)
+        const { text } = commandFields(desc.length > AUDIT.maxArgs * 4 ? desc.slice(0, AUDIT.maxArgs * 4) : desc, level, AUDIT.maxArgs)
+        return {
+          ...base(sid),
+          tool: typeof tool === "string" ? tool : "",
+          command: text,
+          command_sha256: desc ? sha256Hex(desc) : "",
+          decision,
+          source,
+          cwd,
+          reason,
+        }
+      }),
+  }
+}
+
+// Extra verdict fields of a nod response for the audit line.
+function verdictExtras(resp) {
+  const r = resp && typeof resp === "object" ? resp : {}
+  return {
+    category: typeof r.category === "string" || typeof r.category === "number" ? String(r.category) : "",
+    rules: Array.isArray(r.rules) ? r.rules.filter((x) => typeof x === "string") : [],
+  }
 }
 
 function short(err) {
@@ -250,13 +598,15 @@ function short(err) {
   return clip(m.replace(/\s+/g, " "), 200)
 }
 
-// createNod builds the hooks. deps: {client, directory, config, fetch, logPath, now}.
+// createNod builds the hooks. deps: {client, directory, config, fetch, audit, now, clock}; audit is an
+// audit writer (createAuditWriter), null for none, default the shared one for the configured dir.
 export function createNod(deps) {
   const cfg = deps.config || loadConfig({}, {})
   const client = deps.client
   const doFetch = deps.fetch || globalThis.fetch
-  const logPath = deps.logPath === undefined ? defaultLogPath() : deps.logPath
   const now = deps.now || (() => new Date())
+  const clock = deps.clock || Date.now
+  const audit = createAuditor({ config: cfg, writer: deps.audit === undefined ? defaultAuditWriter(cfg) : deps.audit, now })
   const gated = new Set(cfg.tools)
   const children = new Set() // review sessions we created: never reviewed, never cached
   const models = new Map() // sessionID -> {providerID, modelID}
@@ -333,10 +683,11 @@ export function createNod(deps) {
     throw new Error("the session's model is not known")
   }
 
-  async function agentReview(sid, root, req, signal) {
+  async function agentReview(sid, root, req, signal, meta) {
     const p = await post("/v1/review/prompt", req, signal)
     if (!p || typeof p.system !== "string" || typeof p.user !== "string") throw new Error("bad review prompt from nod")
     const model = await modelFor(sid, root, signal)
+    meta.model = `${model.providerID}/${model.modelID}`
     const created = Promise.resolve(client.session.create({ body: { parentID: sid, title: "nod review" }, throwOnError: true, signal }))
     let child
     try {
@@ -383,19 +734,22 @@ export function createNod(deps) {
     return await post("/v1/review/verdict", { request: req, answers }, signal)
   }
 
-  // review returns {decision, reason, source}; every failure is ask.
+  // review returns {decision, reason, source, model, category, rules, ms, error}; every failure is ask.
   async function review(sid, toolName, input, cwd) {
     const ctl = new AbortController()
+    const meta = {}
+    const t0 = clock()
     const run = async () => {
       const root = await rootOf(sid, ctl.signal)
       const req = buildRequest({ tool: toolName, input, cwd, turns: await turnsFor(root, ctl.signal) })
-      const resp = cfg.review === "agent" ? await agentReview(sid, root, req, ctl.signal) : await post("/v1/classify", req, ctl.signal)
-      return mapDecision(resp)
+      const resp = cfg.review === "agent" ? await agentReview(sid, root, req, ctl.signal, meta) : await post("/v1/classify", req, ctl.signal)
+      return { ...mapDecision(resp), ...verdictExtras(resp) }
     }
     try {
-      return await withTimeout(run(), cfg.timeout_ms, () => ctl.abort())
+      const v = await withTimeout(run(), cfg.timeout_ms, () => ctl.abort())
+      return { ...v, model: meta.model, ms: clock() - t0 }
     } catch (err) {
-      return { decision: "ask", reason: `nod could not review this call: ${short(err)}`, source: "error" }
+      return { decision: "ask", reason: `nod could not review this call: ${short(err)}`, source: "error", error: short(err), model: meta.model, ms: clock() - t0 }
     }
   }
 
@@ -409,14 +763,22 @@ export function createNod(deps) {
     },
     "tool.execute.before": async (input, output) => {
       const sid = input && input.sessionID
-      if (sid && children.has(sid)) throw new Error("nod: tools are disabled in the review session")
       const tool = input && input.tool
-      if (!gated.has(tool) || !TOOL_MAP[tool]) return
-      const spec = TOOL_MAP[tool]
       const args = (output && output.args) || {}
       const cwd = typeof args.workdir === "string" && args.workdir ? args.workdir : deps.directory || ""
-      const v = await review(sid, spec.name, spec.input(args), cwd)
-      appendLog(logPath, { time: now().toISOString(), host: "opencode", mode: cfg.mode, review: cfg.review, tool: spec.name, decision: v.decision, source: v.source, reason: clip(v.reason, 300) })
+      if (sid && children.has(sid)) {
+        const why = "tools are disabled in the review session"
+        await audit.other({ sid, tool, args, cwd, decision: "block", source: "review-session", reason: why })
+        throw new Error("nod: " + why)
+      }
+      if (!gated.has(tool) || !TOOL_MAP[tool]) {
+        await audit.other({ sid, tool, args, cwd })
+        return
+      }
+      const spec = TOOL_MAP[tool]
+      const command = spec.input(args)
+      const v = await review(sid, spec.name, command, cwd)
+      await audit.verdict({ sid, tool: spec.name, command, cwd, v })
       if (cfg.mode !== "enforce") return
       const err = enforceError(v.decision, v.reason)
       if (err) throw err
@@ -449,8 +811,9 @@ export function createNodV2(deps) {
   const ctx = deps.ctx
   const cfg = deps.config || loadConfig({}, {})
   const doFetch = deps.fetch || globalThis.fetch
-  const logPath = deps.logPath === undefined ? defaultLogPath() : deps.logPath
   const now = deps.now || (() => new Date())
+  const clock = deps.clock || Date.now
+  const audit = createAuditor({ config: cfg, writer: deps.audit === undefined ? defaultAuditWriter(cfg) : deps.audit, now })
   const gated = new Set(cfg.tools)
 
   async function post(p, body, signal) {
@@ -467,40 +830,49 @@ export function createNodV2(deps) {
     return { model: info && info.model, turns: userTurnsV2(msgs) }
   }
 
-  async function agentReview(req, model, signal) {
+  async function agentReview(req, model, signal, meta) {
     const p = await post("/v1/review/prompt", req, signal)
     if (!p || typeof p.system !== "string" || typeof p.user !== "string") throw new Error("bad review prompt from nod")
     if (!model || !model.providerID || !model.id) throw new Error("the session's model is not known")
+    meta.model = `${model.providerID}/${model.id}`
     const out = await ctx.generate.text({ model: { providerID: model.providerID, id: model.id }, prompt: p.system + "\n\n" + p.user })
     const answers = extractJson(out && typeof out.text === "string" ? out.text : "")
     if (!answers) throw new Error("the review reply had no JSON object")
     return await post("/v1/review/verdict", { request: req, answers }, signal)
   }
 
-  // {decision, reason, source}; every failure is ask.
+  // {decision, reason, source, model, category, rules, ms, error}; every failure is ask.
   async function review(sid, toolName, input, cwd) {
     const ctl = new AbortController()
+    const meta = {}
+    const t0 = clock()
     const run = async () => {
       const { model, turns } = await sessionContext(sid)
       const req = buildRequest({ tool: toolName, input, cwd, turns })
-      const resp = cfg.review === "agent" ? await agentReview(req, model, ctl.signal) : await post("/v1/classify", req, ctl.signal)
-      return mapDecision(resp)
+      const resp = cfg.review === "agent" ? await agentReview(req, model, ctl.signal, meta) : await post("/v1/classify", req, ctl.signal)
+      return { ...mapDecision(resp), ...verdictExtras(resp) }
     }
     try {
-      return await withTimeout(run(), cfg.timeout_ms, () => ctl.abort())
+      const v = await withTimeout(run(), cfg.timeout_ms, () => ctl.abort())
+      return { ...v, model: meta.model, ms: clock() - t0 }
     } catch (err) {
-      return { decision: "ask", reason: `nod could not review this call: ${short(err)}`, source: "error" }
+      return { decision: "ask", reason: `nod could not review this call: ${short(err)}`, source: "error", error: short(err), model: meta.model, ms: clock() - t0 }
     }
   }
 
   async function onToolBefore(event) {
     const tool = event && event.tool
-    if (!gated.has(tool) || !TOOL_MAP[tool]) return
-    const spec = TOOL_MAP[tool]
+    const sid = event && event.sessionID
     const args = (event && event.input) || {}
     const cwd = typeof args.workdir === "string" && args.workdir ? args.workdir : (ctx.location && ctx.location.directory) || ""
-    const v = await review(event.sessionID, spec.name, spec.input(args), cwd)
-    appendLog(logPath, { time: now().toISOString(), host: "opencode", mode: cfg.mode, review: cfg.review, tool: spec.name, decision: v.decision, source: v.source, reason: clip(v.reason, 300) })
+    if (!gated.has(tool) || !TOOL_MAP[tool]) {
+      await audit.other({ sid, tool, args, cwd })
+      return
+    }
+    const spec = TOOL_MAP[tool]
+    const command = spec.input(args)
+    const v = await review(sid, spec.name, command, cwd)
+    await audit.verdict({ sid, tool: spec.name, command, cwd, v })
     if (cfg.mode !== "enforce") return
     const err = enforceError(v.decision, v.reason)
     if (err) throw err
