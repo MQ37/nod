@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/MQ37/nod/internal/decisionlog"
 	"github.com/MQ37/nod/internal/hosts"
 	"github.com/MQ37/nod/internal/hosts/assets"
 )
@@ -68,6 +69,9 @@ func TestInstallStatusIdempotentRemove(t *testing.T) {
 	set := readSettings(t, a)
 	if set.ManagedBy != "nod" || set.Mode != "enforce" || set.Review != "server" || set.URL != "http://127.0.0.1:11096" || set.TimeoutMS != 15000 || len(set.Tools) != 2 || set.Tools[0] != "bash" || set.Tools[1] != "shell" {
 		t.Fatalf("settings: %#v", set)
+	}
+	if want := filepath.Join(home, ".local", "state", "nod", "audit"); set.AuditDir != want || set.AuditCommands != "full" {
+		t.Fatalf("audit settings: dir %q (want %q), commands %q", set.AuditDir, want, set.AuditCommands)
 	}
 	if st, _ := os.Stat(a.settingsFile()); st.Mode().Perm() != 0o600 {
 		t.Fatalf("nod.json mode %v", st.Mode().Perm())
@@ -172,6 +176,34 @@ func TestInstallBacksUpForeignFilesAndRemoveKeepsThem(t *testing.T) {
 	}
 	if r, _ = a.PlanRemove(); len(r.Steps) != 0 {
 		t.Fatalf("remove plans to delete a foreign nod.json: %#v", r.Steps)
+	}
+}
+
+func TestAuditSettingsAndLastVerdict(t *testing.T) {
+	a, home := newAdapter(t, "shadow", nil)
+	a.Env.AuditDir, a.Env.AuditCommands = filepath.Join(home, "audit"), " Hash "
+	p, err := a.PlanInstall(hosts.Options{})
+	apply(t, a, p, err)
+	if set := readSettings(t, a); set.AuditDir != filepath.Join(home, "audit") || set.AuditCommands != "hash" {
+		t.Fatalf("audit settings: %#v", set)
+	}
+	if !strings.Contains(strings.Join(p.Notes, "\n"), filepath.Join(home, "audit", "opencode.jsonl")) {
+		t.Fatalf("plan notes do not name the audit file: %v", p.Notes)
+	}
+	if s := a.Status(); !s.LastVerdict.IsZero() {
+		t.Fatalf("no audit line yet, LastVerdict %v", s.LastVerdict)
+	}
+	when := time.Date(2026, 10, 19, 8, 0, 0, 0, time.UTC)
+	if err := decisionlog.New(filepath.Join(home, "audit", "opencode.jsonl"), false).Append(decisionlog.Entry{Time: when, Host: Name, Tool: "Bash", Decision: "allow"}); err != nil {
+		t.Fatal(err)
+	}
+	if s := a.Status(); !s.LastVerdict.Equal(when) {
+		t.Fatalf("LastVerdict %v, want %v", s.LastVerdict, when)
+	}
+	// An unknown level is the documented default.
+	a.Env.AuditCommands = "everything"
+	if !bytes.Contains(a.settings(hosts.Options{}), []byte(`"audit_commands": "full"`)) {
+		t.Fatalf("unknown level not normalised: %s", a.settings(hosts.Options{}))
 	}
 }
 
