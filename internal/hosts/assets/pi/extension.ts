@@ -17,23 +17,26 @@
  * DECIDER_TIMEOUT      seconds, default 20 (covers a cold model load)
  * DECIDER_PI=off       starts the session with the gate disabled
  * /decider on|off      changes the gate for the current session
- * DECIDER_LOG          audit log, JSONL, default ~/.local/share/nod/omp-decisions.jsonl;
- *                      "off" disables. One line per gated call: input, verdict, final outcome.
- *                      Kept apart from the Claude hook's events.jsonl. Holds tool inputs: mode 0600.
+ *
+ * Audit trail (audit.mjs): one line per tool call this extension sees, judged or not (with the gate
+ * off: decision "unchecked"), in nod's shared format at <audit dir>/omp.jsonl (sha256 hash chain,
+ * `nod audit verify`, `nod decisions`). Holds redacted tool input; files 0600 in a 0700 directory.
+ * NOD_AUDIT_DIR        absolute directory; default $XDG_STATE_HOME/nod/audit, else ~/.local/state/nod/audit
+ * NOD_AUDIT_COMMANDS   full (default: redacted, 4000 characters) | preview (160) | hash (sha256 only)
+ * Writing the trail never changes a verdict; the first failure shows one warning.
  *
  * This is not a sandbox. It only decides whether this Pi process may run the call.
  */
 
-import { appendFileSync, chmodSync, mkdirSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { buildContext, conversationFromBranch, decideSchema, internalOverride, pluginAction, reasonText, shortReplyProposal, taskFromBranch, toolPayload, verdictFromDecide } from "./policy.mjs";
+import { createAudit, gatedFields, uncheckedFields } from "./audit.mjs";
 
 type Verdict = {
 	decision?: string;
 	source?: string;
 	rules?: string[];
+	category?: string;
 	error?: string;
 	body?: unknown;
 };
@@ -45,27 +48,7 @@ const MANUAL_FALLBACK =
 	"If this command is still needed, ask the user to run it manually with `!` in the OMP session. " +
 	"Do not issue it as a tool call again; OMP will add the user's shell output to the conversation.";
 
-const LOG_MAX_INPUT = 4000;
 const PREVIEW_MAX = 3000;
-
-function logPath(): string | null {
-	const raw = process.env.DECIDER_LOG;
-	if (raw === "off") return null;
-	return raw || `${homedir()}/.local/share/nod/omp-decisions.jsonl`;
-}
-
-/** Best-effort audit record; never throws, never blocks the gate. */
-function audit(rec: Record<string, unknown>): void {
-	try {
-		const path = logPath();
-		if (!path) return;
-		mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-		appendFileSync(path, `${JSON.stringify({ ts: Date.now() / 1000, ...rec })}\n`, { mode: 0o600 });
-		chmodSync(path, 0o600);
-	} catch {
-		/* auditing must not affect the gate */
-	}
-}
 
 function endpoint(): string {
 	const raw = (process.env.DECIDER_URL || DEFAULT_URL).replace(/\/$/, "");
@@ -125,88 +108,109 @@ async function classify(args: {
 export default function deciderExtension(pi: ExtensionAPI) {
 	const stats: Stats = { allow: 0, ask: 0, block: 0, error: 0 };
 	let enabled = process.env.DECIDER_PI !== "off";
+	let lastCtx: { hasUI?: boolean; ui?: { notify(message: string, level: string): void } } | undefined;
+	const audit = createAudit({
+		warn: (msg: string) => {
+			try {
+				if (lastCtx?.hasUI && lastCtx.ui) lastCtx.ui.notify(msg, "warning");
+				else process.stderr.write(`${msg}\n`);
+			} catch {
+				/* a warning must not affect the gate */
+			}
+		},
+	});
 
 	pi.on("tool_call", async (event, ctx) => {
-		if (!enabled) return undefined;
-		const { tool, text } = toolPayload(event.toolName, event.input);
+		lastCtx = ctx;
 		const started = Date.now();
-		const base = {
-			harness: "omp",
-			tool_call_id: (event as { toolCallId?: string }).toolCallId,
-			tool,
-			cwd: ctx.cwd,
-			input: text.length > LOG_MAX_INPUT ? text.slice(0, LOG_MAX_INPUT) : text,
-			input_len: text.length,
+		let session = "";
+		try {
+			session = String((ctx.sessionManager as { getSessionId?: () => string }).getSessionId?.() ?? "");
+		} catch {
+			/* no session id */
+		}
+		// Best effort: an audit failure never throws and never changes the outcome.
+		const record = async (fields: Record<string, unknown>) => {
+			try {
+				await audit.record(fields);
+			} catch {
+				/* never */
+			}
 		};
-		const done = (outcome: string, verdict: Verdict | null, task?: string) => {
-			audit({
-				...base,
+		if (!enabled) {
+			await record(uncheckedFields(event.toolName, event.input, { cwd: ctx.cwd, session, source: "disabled", mode: "off" }));
+			return undefined;
+		}
+		const { tool, text } = toolPayload(event.toolName, event.input);
+		const done = (verdict: Verdict, answer: string) => {
+			let reason = "";
+			try {
+				reason = reasonText(verdict);
+			} catch {
+				/* keep empty */
+			}
+			return record(gatedFields(verdict, { tool, text, cwd: ctx.cwd, session, answer, ms: Date.now() - started, reason }));
+		};
+		try {
+			const local = internalOverride(tool, text);
+			if (local?.decision === "allow") {
+				stats.allow += 1;
+				await done(local, "allow");
+				return undefined;
+			}
+			if (local?.decision === "block") {
+				stats.block += 1;
+				await done(local, "block");
+				return { block: true, reason: `${reasonText(local)}. ${MANUAL_FALLBACK}` };
+			}
+			const branch = ctx.sessionManager.getBranch();
+			const task = taskFromBranch(branch);
+			const verdict = await classify({
+				tool,
+				text,
 				task,
-				outcome,
-				decision: verdict?.decision,
-				source: verdict?.source,
-				rules: verdict?.rules,
-				category: verdict?.category,
-				p_allow: verdict?.p_allow,
-				p_block: verdict?.p_block,
-				error: verdict?.error,
-				decider_body: verdict?.body,
-				ms: Date.now() - started,
+				conversation: conversationFromBranch(branch),
+				cwd: ctx.cwd,
+				signal: ctx.signal,
 			});
-		};
-		const local = internalOverride(tool, text);
-		if (local?.decision === "allow") {
-			stats.allow += 1;
-			done("allowed", local);
-			return undefined;
-		}
-		if (local?.decision === "block") {
-			stats.block += 1;
-			done("blocked", local);
-			return { block: true, reason: `${reasonText(local)}. ${MANUAL_FALLBACK}` };
-		}
-		const branch = ctx.sessionManager.getBranch();
-		const task = taskFromBranch(branch);
-		const verdict = await classify({
-			tool,
-			text,
-			task,
-			conversation: conversationFromBranch(branch),
-			cwd: ctx.cwd,
-			signal: ctx.signal,
-		});
-		if (verdict.source === "plugin") stats.error += 1;
-		const action = pluginAction(verdict);
-		const why = reasonText(verdict);
+			if (verdict.source === "plugin") stats.error += 1;
+			const action = pluginAction(verdict);
+			const why = reasonText(verdict);
 
-		if (action === "allow") {
-			stats.allow += 1;
-			done("allowed", verdict, task);
-			return undefined;
-		}
-		if (action === "ask") {
-			stats.ask += 1;
-			if (!ctx.hasUI) {
-				stats.block += 1;
-				done("ask_blocked_no_ui", verdict, task);
-				return { block: true, reason: `${why} (no UI, blocked). ${MANUAL_FALLBACK}` };
+			if (action === "allow") {
+				stats.allow += 1;
+				await done(verdict, "allow");
+				return undefined;
 			}
-			const preview = text.length > PREVIEW_MAX ? `${text.slice(0, PREVIEW_MAX)}\n… (${text.length - PREVIEW_MAX} more characters not shown)` : text;
-			const ok = await ctx.ui.confirm(
-				`decider: allow this ${tool} call?`,
-				`${why}\n\ncwd: ${ctx.cwd}\n\n${preview}`,
-			);
-			if (!ok) {
-				stats.block += 1;
-				done("ask_declined", verdict, task);
-				return { block: true, reason: `${why}; declined. ${MANUAL_FALLBACK}` };
+			if (action === "ask") {
+				stats.ask += 1;
+				if (!ctx.hasUI) {
+					stats.block += 1;
+					await done(verdict, "ask-no-ui");
+					return { block: true, reason: `${why} (no UI, blocked). ${MANUAL_FALLBACK}` };
+				}
+				const preview = text.length > PREVIEW_MAX ? `${text.slice(0, PREVIEW_MAX)}\n… (${text.length - PREVIEW_MAX} more characters not shown)` : text;
+				const ok = await ctx.ui.confirm(
+					`decider: allow this ${tool} call?`,
+					`${why}\n\ncwd: ${ctx.cwd}\n\n${preview}`,
+				);
+				if (!ok) {
+					stats.block += 1;
+					await done(verdict, "ask-declined");
+					return { block: true, reason: `${why}; declined. ${MANUAL_FALLBACK}` };
+				}
+				await done(verdict, "ask-approved");
+				return undefined;
 			}
-			done("ask_approved", verdict, task);
-			return undefined;
+			stats.block += 1;
+			await done(verdict, "block");
+			return { block: true, reason: `${why}. ${MANUAL_FALLBACK}` };
+		} catch (error) {
+			// The host blocks a call whose extension throws; record that, then let it throw as before.
+			const msg = error instanceof Error ? error.message : String(error);
+			await done({ decision: "block", source: "plugin", error: `extension error: ${msg}` }, "block");
+			throw error;
 		}
-		stats.block += 1;
-		done("blocked", verdict, task);
-		return { block: true, reason: `${why}. ${MANUAL_FALLBACK}` };
 	});
 
 	pi.registerCommand("decider", {

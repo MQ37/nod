@@ -1,4 +1,5 @@
-// Package pi installs the Decider extension into Pi / Oh My Pi (omp): extension file + policy module.
+// Package pi installs the Decider extension into Pi / Oh My Pi (omp): extension file, policy module and
+// audit module. The extension writes nod's audit trail itself (<audit dir>/omp.jsonl).
 // The extension runs inside the agent; there is no hook command.
 package pi
 
@@ -17,7 +18,10 @@ import (
 const Name = "pi"
 
 // files maps embedded asset -> file name inside the extension directory (index.ts is what Pi loads).
-var files = [][2]string{{"pi/extension.ts", "index.ts"}, {"pi/policy.mjs", "policy.mjs"}}
+var files = [][2]string{{"pi/extension.ts", "index.ts"}, {"pi/policy.mjs", "policy.mjs"}, {"pi/audit.mjs", "audit.mjs"}}
+
+// auditHost is the audit trail file name the extension writes (<audit dir>/omp.jsonl), for Pi and omp.
+const auditHost = "omp"
 
 // Adapter implements hosts.Host.
 type Adapter struct{ Env hosts.Env }
@@ -62,7 +66,8 @@ func (a *Adapter) PlanInstall(opts hosts.Options) (hosts.Plan, error) {
 	plan.Notes = append(plan.Notes,
 		"the extension has no shadow mode: it blocks on `block`, asks in the UI on `ask`, and blocks on any error",
 		"it calls the server's native /decide endpoint and defaults to a hard-coded host; set DECIDER_URL in the environment of the agent (a new session loads the extension; /reload in a running one)",
-		"disable with DECIDER_PI=off, or `/decider off` inside a session")
+		"disable with DECIDER_PI=off, or `/decider off` inside a session",
+		"every tool call it sees goes to the audit trail "+a.Env.AuditFile(auditHost)+" (NOD_AUDIT_DIR and NOD_AUDIT_COMMANDS in the agent's environment override the defaults)")
 	return plan, nil
 }
 
@@ -113,9 +118,7 @@ func (a *Adapter) Status() hosts.Status {
 	if !wired {
 		s.Detail = "extension not installed (or differs from this nod version)"
 	}
-	if st, err := os.Stat(filepath.Join(a.Env.Home, ".local", "share", "nod", "omp-decisions.jsonl")); err == nil {
-		s.LastVerdict = st.ModTime()
-	}
+	s.LastVerdict = a.Env.LastVerdict(auditHost)
 	return s
 }
 

@@ -1,0 +1,74 @@
+[
+ [
+  "curl -H 'Authorization: Bearer abcdef123456789' https://x -d API_KEY=hunter2 ghp_ABCDEFGHIJKLMNOPQRST aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "curl -H 'Authorization: <redacted>' https://x -d API_KEY=<v> <tok> aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+ ],
+ [
+  "-----BEGIN RSA PRIVATE KEY-----\nMIIabc\n-----END RSA PRIVATE KEY-----",
+  "<private-key>"
+ ],
+ [
+  "cat <<EOF\n-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk\nno end marker",
+  "cat <<EOF\n<private-key>"
+ ],
+ [
+  "curl -H \"authorization:basic dXNlcjpwYXNz\" x",
+  "curl -H \"authorization:<redacted>\" x"
+ ],
+ [
+  "curl -H 'AUTHORIZATION :  token\tabc' x",
+  "curl -H 'AUTHORIZATION :  <redacted>' x"
+ ],
+ [
+  "Authorization:\u000bBearer zzz",
+  "Authorization:<redacted> zzz"
+ ],
+ [
+  "Authorization: Baſic secret1",
+  "Authorization: <redacted>"
+ ],
+ [
+  "Authorization: toKen secret2",
+  "Authorization: <redacted>"
+ ],
+ [
+  "Authorization: secret3 tail",
+  "Authorization:<redacted> tail"
+ ],
+ [
+  "wget --header 'Bearer abcdefgh' --header 'Bearer short'",
+  "wget --header 'Bearer <redacted>' --header 'Bearer short'"
+ ],
+ [
+  "x Bearer abcdefghijk y",
+  "x Bearer abcdefghijk y"
+ ],
+ [
+  "sk-abcdefghijkl sk-short xoxb-123456789012-abc AKIAABCDEFGHIJKLMNOP eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0 apify_api_ABCDEFGHIJKLM",
+  "<tok> sk-short <tok> <tok> <tok> <tok>"
+ ],
+ [
+  "xsk-abcdefghijklmnop _ghp_abcdefghijklmnop glpat-abcdefghijkl.mn-op",
+  "xsk-abcdefghijklmnop _ghp_abcdefghijklmnop <tok>"
+ ],
+ [
+  "export DB_PASSWORD=\"a b c\" AWS_SECRET_ACCESS_KEY='x y' MY_TOKEN=abc def GITHUB_TOKEN= PASSWD=q",
+  "export DB_PASSWORD=<v> AWS_SECRET_ACCESS_KEY=<v> MY_TOKEN=<v> GITHUB_TOKEN= PASSWD=<v>"
+ ],
+ [
+  "lowercase api_key=keep password=keep",
+  "lowercase api_key=keep password=keep"
+ ],
+ [
+  "KEY=v1\u000brest KEYS=v2 more",
+  "KEY=<v> KEYS=<v>"
+ ],
+ [
+  "ünïcödé ſ K Authorization: x",
+  "ünïcödé ſ K Authorization: <redacted>"
+ ],
+ [
+  "",
+  ""
+ ]
+]
