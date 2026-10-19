@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720" role="img" aria-labelledby="title desc">
+  <title id="title">Nod</title>
+  <desc id="desc">Neon robot owl in a cap, arms crossed, smiling, above the word NOD on a synthwave grid.</desc>
+  <style>
+    @keyframes nod { 0%, 80%, 100% { transform: translateY(0) } 84% { transform: translateY(6px) }
+      88% { transform: translateY(0) } 92% { transform: translateY(6px) } 96% { transform: translateY(0) } }
+    @media (prefers-reduced-motion: no-preference) { .nod { animation: nod 7s ease-in-out infinite } }
+  </style>
+  <defs>
+    
+    <linearGradient id="fade" gradientUnits="userSpaceOnUse" x1="0" y1="428" x2="0" y2="720">
+      <stop offset="0" stop-color="#fff" stop-opacity="0"/>
+      <stop offset="0.12" stop-color="#fff" stop-opacity="0.12"/>
+      <stop offset="0.5" stop-color="#fff" stop-opacity="0.6"/>
+      <stop offset="1" stop-color="#fff" stop-opacity="1"/>
+    </linearGradient>
+    <mask id="grid-fade" maskUnits="userSpaceOnUse" x="0" y="0" width="1200" height="720">
+      <rect x="0" y="428" width="1200" height="292" fill="url(#fade)"/>
+    </mask>
+    <radialGradient id="hz" gradientUnits="userSpaceOnUse" cx="600" cy="428" r="504"
+        gradientTransform="translate(0 428) scale(1 0.22) translate(0 -428)">
+      <stop offset="0" stop-color="#ff6fe0" stop-opacity="0.25"/>
+      <stop offset="0.45" stop-color="#b394ff" stop-opacity="0.1"/>
+      <stop offset="1" stop-color="#b394ff" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="edge" gradientUnits="userSpaceOnUse" cx="600" cy="428" r="600"
+        gradientTransform="translate(0 428) scale(1 0.6) translate(0 -428)">
+      <stop offset="0" stop-color="#fff"/><stop offset="0.65" stop-color="#fff" stop-opacity="0.9"/>
+      <stop offset="1" stop-color="#fff" stop-opacity="0"/>
+    </radialGradient>
+    <mask id="grid-edge" maskUnits="userSpaceOnUse" x="0" y="0" width="1200" height="720">
+      <rect width="1200" height="720" fill="url(#edge)"/>
+    </mask>
+    <linearGradient id="hl" x1="0" x2="1" y1="0" y2="0"><stop offset="0" stop-color="#fff" stop-opacity="0"/><stop offset="0.5" stop-color="#fff"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
+    <mask id="hline" maskUnits="userSpaceOnUse" x="0" y="424" width="1200" height="8"><rect x="0" y="424" width="1200" height="8" fill="url(#hl)"/></mask>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%" color-interpolation-filters="sRGB"><feGaussianBlur in="SourceGraphic" stdDeviation="3" result="a"/><feGaussianBlur in="SourceGraphic" stdDeviation="9" result="b"/><feComponentTransfer in="b" result="b"><feFuncA type="linear" slope="0.35"/></feComponentTransfer><feComponentTransfer in="a" result="a"><feFuncA type="linear" slope="0.35"/></feComponentTransfer><feMerge><feMergeNode in="b"/><feMergeNode in="a"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    <mask id="cap-cut" maskUnits="userSpaceOnUse" x="-300" y="-120" width="600" height="760">
+      <rect x="-300" y="-120" width="600" height="760" fill="#fff"/>
+      <g transform="translate(-16,108) rotate(-8) scale(1.08)" fill="#000" stroke="#000" stroke-width="22" stroke-linejoin="round">
+        <path d="M-62,0 C-64,-44 -28,-66 4,-64 C38,-62 62,-38 60,0 Q0,9 -62,0 Z"/><path d="M58,-2 C84,-8 110,-6 114,4 C106,14 78,15 50,8 Z"/>
+      </g>
+    </mask>
+    <mask id="arm-cut" maskUnits="userSpaceOnUse" x="-300" y="-120" width="600" height="760">
+      <rect x="-300" y="-120" width="600" height="760" fill="#fff"/>
+      <path d="M124,354 C70,362 -10,358 -48,342 C-66,328 -92,312 -118,310 C-112,336 -90,358 -62,368 C-20,386 80,406 132,396 C154,388 152,356 124,354 Z" fill="#000" stroke="#000" stroke-width="24" stroke-linejoin="round"/>
+    </mask>
+    <g id="owl">
+      <path d="M-112,116 Q0,92 112,116 Q140,104 160,80 C178,126 186,182 188,238 C192,296 198,352 186,408 C172,470 104,514 0,516 C-104,514 -172,470 -186,408 C-198,352 -192,296 -188,238 C-186,182 -178,126 -160,80 Q-140,104 -112,116 Z" mask="url(#cap-cut)"/>
+      <path d="M-166,166 C-146,136 -86,124 -38,148 Q-12,160 0,180 Q12,160 38,148 C86,124 146,136 166,166"/>
+      <circle cx="-72" cy="218" r="54"/>
+      <circle cx="72" cy="218" r="54"/>
+      <path d="M0,248 L13,266 L0,288 L-13,266 Z"/>
+      <path d="M-189,284 C-110,322 110,322 189,284"/>
+      <g transform="translate(0,16)">
+        <g mask="url(#arm-cut)"><path d="M-124,346 C-70,354 10,350 48,334 C66,320 92,304 118,302 C112,328 90,350 62,360 C20,378 -80,398 -132,388 C-154,380 -152,348 -124,346 Z"/><path d="M104,316 Q88,330 66,342"/></g>
+        <path d="M124,354 C70,362 -10,358 -48,342 C-66,328 -92,312 -118,310 C-112,336 -90,358 -62,368 C-20,386 80,406 132,396 C154,388 152,356 124,354 Z"/>
+        <path d="M-104,324 Q-88,338 -66,350"/>
+      </g>
+      <path d="M-134,424 C-142,458 -132,488 -104,506"/><path d="M134,424 C142,458 132,488 104,506"/>
+      <path d="M-100,506 L-105,526 Q-97,538 -88,528 Q-80,540 -72,528 Q-63,538 -55,526 L-60,506"/>
+      <path d="M60,506 L55,526 Q63,538 72,528 Q80,540 88,528 Q97,538 105,526 L100,506"/>
+      <g transform="translate(-16,108) rotate(-8) scale(1.08)">
+        <path d="M-62,0 C-64,-44 -28,-66 4,-64 C38,-62 62,-38 60,0"/><path d="M-62,0 Q0,9 60,0"/><path d="M58,-2 C84,-8 110,-6 114,4 C106,14 78,15 50,8"/><path d="M-4,-63 C-16,-40 -18,-18 -12,4"/>
+        <circle cx="2" cy="-72" r="6"/>
+      </g>
+    </g>
+    <mask id="wm-c" maskUnits="userSpaceOnUse" x="-40" y="-40" width="570" height="230"><g fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M0,150 V0 L112,150 V0" stroke="#fff" stroke-width="30"/><path d="M218.3,147.1 A75,75 0 0 1 218.3,2.9" stroke="#fff" stroke-width="30"/><path d="M0,150 V0 L112,150 V0" stroke="#000" stroke-width="13"/><path d="M218.3,147.1 A75,75 0 0 1 218.3,2.9" stroke="#000" stroke-width="13"/></g></mask>
+    <mask id="wm-m" maskUnits="userSpaceOnUse" x="-40" y="-40" width="570" height="230"><g fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M259.7,2.9 A75,75 0 0 1 259.7,147.1" stroke="#fff" stroke-width="30"/><path d="M366,0 V150 H409 A75,75 0 0 0 409,0 Z" stroke="#fff" stroke-width="30"/><path d="M259.7,2.9 A75,75 0 0 1 259.7,147.1" stroke="#000" stroke-width="13"/><path d="M366,0 V150 H409 A75,75 0 0 0 409,0 Z" stroke="#000" stroke-width="13"/></g></mask>
+    <mask id="wm-cc" maskUnits="userSpaceOnUse" x="-40" y="-40" width="570" height="230"><g fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M0,150 V0 L112,150 V0" stroke="#fff" stroke-width="24"/><path d="M218.3,147.1 A75,75 0 0 1 218.3,2.9" stroke="#fff" stroke-width="24"/><path d="M0,150 V0 L112,150 V0" stroke="#000" stroke-width="19"/><path d="M218.3,147.1 A75,75 0 0 1 218.3,2.9" stroke="#000" stroke-width="19"/></g></mask>
+    <mask id="wm-mc" maskUnits="userSpaceOnUse" x="-40" y="-40" width="570" height="230"><g fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M259.7,2.9 A75,75 0 0 1 259.7,147.1" stroke="#fff" stroke-width="24"/><path d="M366,0 V150 H409 A75,75 0 0 0 409,0 Z" stroke="#fff" stroke-width="24"/><path d="M259.7,2.9 A75,75 0 0 1 259.7,147.1" stroke="#000" stroke-width="19"/><path d="M366,0 V150 H409 A75,75 0 0 0 409,0 Z" stroke="#000" stroke-width="19"/></g></mask>
+  </defs>
+  <g>
+    <rect x="0" y="317.1" width="1200" height="221.8" fill="url(#hz)"/>
+    <g mask="url(#grid-fade)"><path d="M600,428 L-5509.6,920 M600,428 L-5384.9,920 M600,428 L-5260.2,920 M600,428 L-5135.5,920 M600,428 L-5010.8,920 M600,428 L-4886.1,920 M600,428 L-4761.5,920 M600,428 L-4636.8,920 M600,428 L-4512.1,920 M600,428 L-4387.4,920 M600,428 L-4262.7,920 M600,428 L-4138,920 M600,428 L-4013.3,920 M600,428 L-3888.7,920 M600,428 L-3764,920 M600,428 L-3639.3,920 M600,428 L-3514.6,920 M600,428 L-3389.9,920 M600,428 L-3265.2,920 M600,428 L-3140.5,920 M600,428 L-3015.9,920 M600,428 L-2891.2,920 M600,428 L-2766.5,920 M600,428 L-2641.8,920 M600,428 L-2517.1,920 M600,428 L-2392.4,920 M600,428 L-2267.8,920 M600,428 L-2143.1,920 M600,428 L-2018.4,920 M600,428 L-1893.7,920 M600,428 L-1769,920 M600,428 L-1644.3,920 M600,428 L-1519.6,920 M600,428 L-1395,920 M600,428 L-1270.3,920 M600,428 L-1145.6,920 M600,428 L-1020.9,920 M600,428 L-896.2,920 M600,428 L-771.5,920 M600,428 L-646.8,920 M600,428 L-522.2,920 M600,428 L-397.5,920 M600,428 L-272.8,920 M600,428 L-148.1,920 M600,428 L-23.4,920 M600,428 L101.3,920 M600,428 L225.9,920 M600,428 L350.6,920 M600,428 L475.3,920 M600,428 L600,920 M600,428 L724.7,920 M600,428 L849.4,920 M600,428 L974.1,920 M600,428 L1098.7,920 M600,428 L1223.4,920 M600,428 L1348.1,920 M600,428 L1472.8,920 M600,428 L1597.5,920 M600,428 L1722.2,920 M600,428 L1846.8,920 M600,428 L1971.5,920 M600,428 L2096.2,920 M600,428 L2220.9,920 M600,428 L2345.6,920 M600,428 L2470.3,920 M600,428 L2595,920 M600,428 L2719.6,920 M600,428 L2844.3,920 M600,428 L2969,920 M600,428 L3093.7,920 M600,428 L3218.4,920 M600,428 L3343.1,920 M600,428 L3467.8,920 M600,428 L3592.4,920 M600,428 L3717.1,920 M600,428 L3841.8,920 M600,428 L3966.5,920 M600,428 L4091.2,920 M600,428 L4215.9,920 M600,428 L4340.5,920 M600,428 L4465.2,920 M600,428 L4589.9,920 M600,428 L4714.6,920 M600,428 L4839.3,920 M600,428 L4964,920 M600,428 L5088.7,920 M600,428 L5213.3,920 M600,428 L5338,920 M600,428 L5462.7,920 M600,428 L5587.4,920 M600,428 L5712.1,920 M600,428 L5836.8,920 M600,428 L5961.5,920 M600,428 L6086.1,920 M600,428 L6210.8,920 M600,428 L6335.5,920 M600,428 L6460.2,920 M600,428 L6584.9,920 M600,428 L6709.6,920 M-10,610.5 H1210 M-10,549.7 H1210 M-10,519.2 H1210 M-10,501 H1210 M-10,488.8 H1210 M-10,480.1 H1210 M-10,473.6 H1210 M-10,468.6 H1210 M-10,464.5 H1210 M-10,461.2 H1210 M-10,458.4 H1210" fill="none" stroke="#9b7be8" stroke-width="1.6" stroke-opacity="0.55" mask="url(#grid-edge)"/></g>
+    <path d="M0,428 H1200" stroke="#ff6fe0" stroke-width="1.2" stroke-opacity="0.25" mask="url(#hline)"/>
+  </g>
+  <g class="nod">
+  <g filter="url(#glow)">
+    <g transform="translate(600,24) scale(0.74)" fill="none" stroke="#0fae52" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"><use href="#owl"/><path d="M-94,228 A22,22 0 0 1 -50,228"/><path d="M50,228 A22,22 0 0 1 94,228"/></g>
+  </g>
+  </g>
+  <g filter="url(#glow)">
+    <g transform="translate(391.9,486) scale(0.86)">
+      <rect x="-40" y="-40" width="570" height="230" fill="#0096c7" mask="url(#wm-c)"/>
+      <rect x="-40" y="-40" width="570" height="230" fill="#cf22ad" mask="url(#wm-m)"/>
+    </g>
+  </g>
+</svg>

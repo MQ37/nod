@@ -1,0 +1,76 @@
+{
+  "tiers": [
+    {
+      "id": "lite",
+      "source": "hf-convert",
+      "repo": "Mapika/decider-12b",
+      "gguf": "decider-12b-Q8_0.gguf",
+      "outtype": "q8_0",
+      "gguf_sha256": "TODO-sha256",
+      "files": [
+        {"path":"model.safetensors","size":23919549408,"sha256":"efb90aaf7521515851584f673ff4513027abb84df97a9ad2aa4fe27bc250770a"},
+        {"path":"tokenizer.json","size":32169626,"sha256":"cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45cb627bfe0f"},
+        {"path":"decider_config.json","size":371,"sha256":"adec3315f52f28e20c0bf1dc78308e1c71af72d5e7d34aff0723f1f2b648be34"},
+        {"path":"tokenizer_config.json","size":3089,"sha256":"a62f4e85a47c0c136edaaa3a4f591fd6783717299a9def47e5ad03a49f6a5eb9"},
+        {"path":"chat_template.jinja","size":18683,"sha256":"ae53464bf3be25802b3a5b37def7fd89667067d7577049b3b2d74c4d8de4c6d4"},
+        {"path":"config.json","size":4423,"sha256":"478c46e8d2c52d5c2d85bf67e3b3e8c90e7c9d91086cee27e3c267907e936bd9"},
+        {"path":"generation_config.json","size":260,"sha256":"a8349d9bd64cc5841297fcb5002f0fdc4749c473c8f1b10ea337f9ce4ee7014e"},
+        {"path":"processor_config.json","size":1382,"sha256":"6b938e76555b3e9946890770e1abcd442a4718f34041a58e8139dc8ad34545c9"}
+      ]
+    },
+    {
+      "id": "fast",
+      "source": "hf-gguf",
+      "repo": "Mapika/decider-4b-GGUF",
+      "gguf": "decider-4b-v2.1-Q4_K_M.gguf",
+      "files": [
+        {"path": "decider-4b-v2.1-Q4_K_M.gguf", "size": 2708804640, "sha256": "c7083fcfc93f650cd66caeade4a3840ef9eeeeb1e80920907c554f70619d7c56"},
+        {"path": "tokenizer.json", "size": 19989325, "sha256": "06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523"},
+        {"path": "decider_config.json", "size": 1378, "sha256": "fc83293b6f707172e20176d603ea88dd1a3be2abd3596fdb1ccbec9404626baf"},
+        {"path": "tokenizer_config.json", "size": 1127, "sha256": "171ecbe7ddae98d11840698f7df2b8d5b4722139db0f0620d3bbf429bd656250"},
+        {"path": "chat_template.jinja", "size": 7756, "sha256": "a4aee8afcf2e0711942cf848899be66016f8d14a889ff9ede07bca099c28f715"}
+      ]
+    },
+    {
+      "id": "full",
+      "source": "hf-convert",
+      "repo": "Mapika/decider-35b-a3b",
+      "gguf": "decider-35b-a3b-Q8_0.gguf",
+      "outtype": "q8_0",
+      "gguf_sha256": "TODO-sha256",
+      "files": [
+        {"path": "tokenizer.json", "size": 19989325, "sha256": "06b9509352d2af50381ab2247e083b80d32d5c0aba91c272ca9ff729b6a0e523"},
+        {"path": "decider_config.json", "size": 454, "sha256": "42fae85903cf77ba3bca95f7e733e472c3535e713428ca57cfa791e3f062b703"},
+        {"path": "tokenizer_config.json", "size": 1126, "sha256": "353c083805d863719e54973335a38e252a92e1ac64d32b83bb0b333cc1644ef2"},
+        {"path": "chat_template.jinja", "size": 7756, "sha256": "a4aee8afcf2e0711942cf848899be66016f8d14a889ff9ede07bca099c28f715"},
+        {"path": "config.json", "size": 2377, "sha256": "51aa5824bfac1862ad9a912e7a41429d325b89f30a56c8216ef7361ca2646e1b"},
+        {"path": "generation_config.json", "size": 116, "sha256": "62153eb6c69f2e1f426beaa8002b7186437e949c7588167085df14e10e9c0a73"},
+        {"path": "model.safetensors.index.json", "size": 3307617, "sha256": "e513b82c6f4453857d081f8659a7fedef06cf4db5e58a7f2fb3163903b7d877f"},
+        {"path": "model-00001-of-00015.safetensors", "size": 4861004088, "sha256": "c230ef13988becedf0c3f81c76628283663007466d8bfcead27bd2d85a297935"},
+        {"path": "model-00002-of-00015.safetensors", "size": 4506714376, "sha256": "4eaeb99c73f9d075d6aff9f2245fe88b7e3b5faf546b4c110316174fa61e77f5"},
+        {"path": "model-00003-of-00015.safetensors", "size": 4989093232, "sha256": "f31fa5d8cd003aed7b8fb2b428d90ba9d3d7e12071fc0c07b17b0f67bbdee140"},
+        {"path": "model-00004-of-00015.safetensors", "size": 4574152520, "sha256": "4407b99000e95cc906268010703e0036976fe015425fbd160b28c56f7008bfed"},
+        {"path": "model-00005-of-00015.safetensors", "size": 4976513672, "sha256": "5e5eed694729abdf8dc0eb22580ee724501040e71ab65c5b688f125c1ecf0006"},
+        {"path": "model-00006-of-00015.safetensors", "size": 4990860936, "sha256": "ee091bd7107b1e5c347153bc116ba385816c2b67f045c6ab59f38ae18d266280"},
+        {"path": "model-00007-of-00015.safetensors", "size": 4564708264, "sha256": "0d540f11b3df3134db58830f8d8c6979a5504c89e48c0ebc90928f321184e26d"},
+        {"path": "model-00008-of-00015.safetensors", "size": 4506716424, "sha256": "5a7062793d00efb2d8904198968d52159cc2c2bbad03886020395db0aae0c136"},
+        {"path": "model-00009-of-00015.safetensors", "size": 4506716432, "sha256": "d806e89b85bf1a360b9c576f6de907e67f41b4443034d261889b65ba478efaf4"},
+        {"path": "model-00010-of-00015.safetensors", "size": 4989095576, "sha256": "ceebc6759cae88ad2fa75c0d4f67a3c83bfb23c540ec546a6d661193388d7cba"},
+        {"path": "model-00011-of-00015.safetensors", "size": 4499363680, "sha256": "5a329b4b880be2bd3526214c8c068d9dad3b32d5ba497e054444e761951f0334"},
+        {"path": "model-00012-of-00015.safetensors", "size": 4506716472, "sha256": "4a49900cb63a3bd7a1e8a9d4fb127d5283e5243a8a32aef92326e456ad9d0677"},
+        {"path": "model-00013-of-00015.safetensors", "size": 4989095576, "sha256": "8dde20ac69c397bbdfafc78355032278878d60c860ecd1622e74c37676cbe628"},
+        {"path": "model-00014-of-00015.safetensors", "size": 4574154552, "sha256": "3ec1e988ee302b3e5bd282f93e18a741c69fec77f2021b397f2478145cdc89b9"},
+        {"path": "model-00015-of-00015.safetensors", "size": 3290673624, "sha256": "1aa8bef406b36ed1479c2e50adb568a1367de94d0bc622a3b8809b4625494cbb"}
+      ]
+    },
+    {
+      "id": "full-q4",
+      "source": "hf-convert",
+      "repo": "Mapika/decider-35b-a3b",
+      "gguf": "decider-35b-a3b-Q4_K_M.gguf",
+      "outtype": "q4_k_m",
+      "gguf_sha256": "TODO-sha256",
+      "files": []
+    }
+  ]
+}

@@ -1,0 +1,1 @@
+{"layout": "chat", "head": "<bos><|turn>user\n", "tail": "<turn|>\n<|turn>model\n<|channel>thought\n<channel|>", "answer": "Answer", "head_ids": [2,105,2364,107], "tail_ids": [106,107,105,4368,107,100,45518,107,101]}

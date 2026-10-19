@@ -1,0 +1,10 @@
+{
+ "version": "12b-v2",
+ "layout": "chat",
+ "temperature": 1.5,
+ "temperature_by_type": {"choice": 1.5, "noul": 0.05, "score": 1.0},
+ "neutralize_none": false,
+ "isolated_levels": false,
+ "base": "google/gemma-4-12B-it (revision 707f0a3b) + merged LoRA (rank 32, attention and MLP), state-tracking fine-tune",
+ "requires": "decider-ai>=1.7.0 (final-logit softcapping)"
+}

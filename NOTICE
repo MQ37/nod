@@ -1,0 +1,11 @@
+Nod is MIT-licensed (see LICENSE). It builds on the following; their own terms apply to them.
+
+- Decider reference code (docs/reference/decider-ai-1.8.0/ and the Go port of its prompt,
+  inference and temperature logic): by Mapika, Apache-2.0, https://huggingface.co/Mapika
+- Decider models (decider-4b, decider-12b, decider-35b-a3b): by Mapika, Apache-2.0. Nod does not
+  ship them; the installer downloads (and, for lite/full, converts) them at install time from
+  Hugging Face. decider-12b is built on Gemma-4-12B-it, which is distributed under Google's Gemma
+  Terms of Use; check them before redistributing converted weights.
+- llama.cpp (https://github.com/ggml-org/llama.cpp), MIT: downloaded as pinned release libraries
+  or supplied by the user.
+- Go dependencies are listed in go.mod and go.sum, each under its own license.

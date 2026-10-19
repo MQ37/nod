@@ -1,0 +1,11 @@
+name: nod-gate
+version: "0.1.0"
+description: "Second-opinion gate for terminal / file tool calls: asks a local Decider model (nod), or with NOD_REVIEW=agent the session's own model, whether the user's own messages approved this exact action. Shadow mode (default) only logs; enforce mode blocks clear 'block' verdicts (the agent review also hands 'ask' to Hermes' own approval prompt). Never approves anything itself; the Decider path fails open, the agent review fails safe (asks)."
+author: "MQ37"
+hooks:
+  - pre_llm_call
+  - pre_tool_call
+  - post_tool_call
+  - subagent_start
+  - pre_approval_request
+  - post_approval_response

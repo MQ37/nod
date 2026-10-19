@@ -1,0 +1,41 @@
+# build output
+dist/
+*.test
+*.out
+coverage*
+
+# models, weights and anything large (fetched at install time, never committed)
+*.gguf
+*.safetensors
+*.bin
+*.onnx
+/models/
+/lib/
+
+# secrets, local config, logs and decision data
+.env
+.env.*
+*.pem
+*.key
+*.token
+token
+secrets/
+config.local.*
+*.log
+*.jsonl
+!testdata/golden/*.jsonl
+events*.json*
+decisions*.json*
+
+# editor, OS, agent and helper scratch
+.DS_Store
+*.swp
+.idea/
+.vscode/
+.run-*
+.commit-msg
+.cursor/
+.codex/
+.claude/
+__pycache__/
+node_modules/
