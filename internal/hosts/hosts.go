@@ -51,15 +51,17 @@ var ErrNotSupported = errors.New("host not supported yet")
 
 // Env is everything an adapter needs from the machine; tests set it to a temp HOME.
 type Env struct {
-	Home       string              // user's home directory
-	Getenv     func(string) string // environment lookup (os.Getenv by default)
-	Now        func() time.Time    // clock (backups, logs)
-	RuntimeDir string              // directory of the RAM-only verdict log ($XDG_RUNTIME_DIR/nod)
-	Mode       func() string       // current mode: "shadow" | "enforce" (stored in the nod config)
-	URL        string              // server URL written to host config (Hermes env file); "" = host default
-	OnError    string              // "ask" (default) | "block" | "allow": answer when the classifier fails
-	Command    string              // how hosts invoke us, default "nod"
-	Stderr     io.Writer           // diagnostics (never stdout)
+	Home          string              // user's home directory
+	Getenv        func(string) string // environment lookup (os.Getenv by default)
+	Now           func() time.Time    // clock (backups, logs)
+	RuntimeDir    string              // RAM-only scratch directory ($XDG_RUNTIME_DIR/nod)
+	AuditDir      string              // persistent audit trail directory; "" = $NOD_AUDIT_DIR or $XDG_STATE_HOME/nod/audit
+	AuditCommands string              // what the audit trail stores of a command: full (default) | preview | hash
+	Mode          func() string       // current mode: "shadow" | "enforce" (stored in the nod config)
+	URL           string              // server URL written to host config (Hermes env file); "" = host default
+	OnError       string              // "ask" (default) | "block" | "allow": answer when the classifier fails
+	Command       string              // how hosts invoke us, default "nod"
+	Stderr        io.Writer           // diagnostics (never stdout)
 }
 
 // DefaultEnv builds the Env for the running process.
@@ -84,6 +86,9 @@ func (e Env) withDefaults() Env {
 	}
 	if e.RuntimeDir == "" {
 		e.RuntimeDir = defaultRuntimeDir(e.Getenv)
+	}
+	if e.AuditDir == "" {
+		e.AuditDir = defaultAuditDir(e.Getenv, e.Home)
 	}
 	if e.Command == "" {
 		e.Command = "nod"

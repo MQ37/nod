@@ -1,8 +1,6 @@
 package hosts
 
 import (
-	"bufio"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -21,7 +19,18 @@ func defaultRuntimeDir(getenv func(string) string) string {
 	return filepath.Join(os.TempDir(), fmt.Sprintf("nod-%d", os.Getuid()))
 }
 
-// Verdict is one hook verdict. It never holds command text or conversation.
+func defaultAuditDir(getenv func(string) string, home string) string {
+	if d := getenv("NOD_AUDIT_DIR"); d != "" && filepath.IsAbs(d) {
+		return d
+	}
+	if x := getenv("XDG_STATE_HOME"); x != "" && filepath.IsAbs(x) {
+		return filepath.Join(x, "nod", "audit")
+	}
+	return filepath.Join(home, ".local", "state", "nod", "audit")
+}
+
+// Verdict is one hook verdict. Command is the original command text: it is redacted and clipped before
+// anything is written (see decisionlog.CommandFields). No conversation text is ever stored.
 type Verdict struct {
 	Time     time.Time `json:"time"`
 	Host     string    `json:"host"`
@@ -33,14 +42,20 @@ type Verdict struct {
 	Answer   string    `json:"answer,omitempty"`
 	Ms       int       `json:"ms,omitempty"`
 	Error    string    `json:"error,omitempty"`
+	Command  string    `json:"-"`
+	Session  string    `json:"-"` // host session id; stored as a short hash
+	Review   string    `json:"-"`
+	Category string    `json:"-"`
+	Reason   string    `json:"-"`
+	Cwd      string    `json:"-"`
 }
 
-// VerdictLogPath is the shared CLI and hook decision log.
-func (e Env) VerdictLogPath() string {
-	return filepath.Join(e.Norm().RuntimeDir, "decisions.jsonl")
+// AuditFile is the audit log of one host: <audit dir>/<host>.jsonl.
+func (e Env) AuditFile(host string) string {
+	return filepath.Join(e.Norm().AuditDir, host+".jsonl")
 }
 
-// LogVerdict appends one line best-effort; logging failure never changes a hook answer.
+// LogVerdict appends one audit line best-effort; logging failure never changes a hook answer.
 func (e Env) LogVerdict(v Verdict) {
 	defer func() { _ = recover() }()
 	e = e.Norm()
@@ -48,25 +63,17 @@ func (e Env) LogVerdict(v Verdict) {
 	if !v.Time.IsZero() {
 		ts = v.Time.UTC()
 	}
-	entry := decisionlog.Entry{Time: ts, Host: v.Host, Tool: v.Tool, Decision: v.Decision, Source: v.Source, Rules: v.Rules, Ms: v.Ms}
-	_ = decisionlog.New(e.VerdictLogPath(), false).Append(entry)
+	sha, text := decisionlog.CommandFields(v.Command, e.AuditCommands)
+	entry := decisionlog.Entry{Time: ts, Host: v.Host, Session: decisionlog.HashSession(v.Session), Mode: v.Mode, Review: v.Review, Tool: v.Tool,
+		Command: text, CommandSHA256: sha, Decision: v.Decision, Source: v.Source, Rules: v.Rules, Category: v.Category, Ms: v.Ms, Error: v.Error, Cwd: v.Cwd, Reason: v.Reason}
+	_ = decisionlog.New(e.AuditFile(v.Host), false).Append(entry)
 }
 
-// LastVerdict returns the timestamp of the newest log line for host.
+// LastVerdict returns the timestamp of the newest audit line for host.
 func (e Env) LastVerdict(host string) time.Time {
-	f, err := os.Open(e.VerdictLogPath())
-	if err != nil {
+	es, err := decisionlog.ReadLast(e.AuditFile(host), 1)
+	if err != nil || len(es) == 0 {
 		return time.Time{}
 	}
-	defer f.Close()
-	var last time.Time
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 64*1024), 1<<20)
-	for sc.Scan() {
-		var v decisionlog.Entry
-		if json.Unmarshal(sc.Bytes(), &v) == nil && v.Host == host && v.Time.After(last) {
-			last = v.Time
-		}
-	}
-	return last
+	return es[len(es)-1].Time
 }

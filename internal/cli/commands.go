@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -62,7 +63,8 @@ func init() {
 	Register("status", Command{Summary: "show daemon and install status", Usage: "status [--service-name NAME] [--json]", Flags: []Flag{{Name: "service-name", Kind: String, Usage: "user service identity"}}, Examples: []string{"nod status --json"}, Run: runStatus})
 	Register("doctor", Command{Summary: "check nod installation and health", Usage: "doctor [--service-name NAME] [--json]", Flags: []Flag{{Name: "service-name", Kind: String, Usage: "user service identity"}}, Examples: []string{"nod doctor", "nod doctor --json"}, Run: runDoctor})
 	Register("connect", Command{Summary: "use a remote nod server", Usage: "connect URL", Examples: []string{"nod connect https://guard.example:11096"}, Run: runConnect})
-	Register("decisions", Command{Summary: "show recent verdicts", Usage: "decisions [-n COUNT] [--follow] [--json]", Flags: []Flag{{Name: "n", Short: "n", Kind: Int, Default: "20", Usage: "number of verdicts"}, {Name: "follow", Kind: Bool, Usage: "wait for new verdicts"}}, Examples: []string{"nod decisions", "nod decisions -n 50 --json"}, Run: runDecisions})
+	Register("audit", Command{Summary: "check the audit trail", Usage: "audit verify [--host H] | audit path", Flags: []Flag{{Name: "host", Kind: String, Usage: "only this host's file"}}, Subs: []string{"verify", "path"}, Examples: []string{"nod audit verify", "nod audit path"}, Run: runAudit})
+	Register("decisions", Command{Summary: "show recent verdicts from every host", Usage: "decisions [-n COUNT] [--follow] [--json]", Flags: []Flag{{Name: "n", Short: "n", Kind: Int, Default: "20", Usage: "number of verdicts"}, {Name: "follow", Kind: Bool, Usage: "wait for new verdicts"}}, Examples: []string{"nod decisions", "nod decisions -n 50 --json"}, Run: runDecisions})
 	Register("serve", Command{Summary: "run the local HTTP decision service", Usage: "serve [--addr HOST:PORT] [--model PATH] [--idle-unload SECS] [--warm-wait SECS] [--engine hybrid|model] [--power plugged|always|never]", Flags: []Flag{{Name: "addr", Kind: String, Default: "127.0.0.1:11096", Usage: "listen address"}, {Name: "model", Kind: String, Usage: "GGUF model path"}, {Name: "idle-unload", Kind: Int, Default: "900", Usage: "idle seconds before unloading (0 keeps resident)"}, {Name: "power", Kind: String, Choices: []string{"plugged", "always", "never"}, Usage: "when the model may run: plugged = not on battery (default), always, never"}, {Name: "engine", Kind: String, Choices: []string{"hybrid", "model"}, Usage: "hybrid = tiers + rules + model; model = the model judges every call"}, {Name: "warm-wait", Kind: Int, Default: "5", Usage: "maximum cold-load wait in seconds"}}, Examples: []string{"nod serve --addr 127.0.0.1:11096", "nod serve --idle-unload 0"}, Run: runServe})
 	Register("install", Command{Summary: "plan and install nod", Usage: "install [--model full|lite|fast|agent] [--model-path GGUF] [--llama-lib-dir DIR] [--host HOSTS|none] [--service-name NAME] [--mode shadow|enforce] [--addr HOST:PORT] [--on-unreachable ask|block|allow] [--dry-run] [--yes]", Flags: []Flag{{Name: "model", Kind: String, Choices: []string{"full", "lite", "fast", "agent"}, Usage: "model size, or agent = the model your agent already runs reviews each call (hermes, opencode)"}, {Name: "model-path", Kind: String, Usage: "your Decider GGUF (see nod models list, nod skill print)"}, {Name: "llama-lib-dir", Kind: String, Usage: "directory with your llama.cpp libraries (libllama.so / .dylib)"}, {Name: "host", Kind: String, Usage: "comma-separated hosts or none"}, {Name: "service-name", Kind: String, Usage: "user service identity"}, {Name: "mode", Kind: String, Choices: []string{"shadow", "enforce"}, Default: "shadow", Usage: "hook mode"}, {Name: "addr", Kind: String, Default: "127.0.0.1:11096", Usage: "service bind address"}, {Name: "on-unreachable", Kind: String, Choices: []string{"ask", "block", "allow"}, Default: "ask", Usage: "decision when service is unavailable"}, {Name: "remote", Kind: String, Usage: "remote server URL"}, {Name: "dry-run", Kind: Bool, Usage: "print plan without applying"}}, Examples: []string{"nod install --dry-run --json", "nod install --model fast --host claude --mode shadow --yes", "nod install --host none --addr 0.0.0.0:11096 --yes"}, Run: runInstall})
 	Register("uninstall", Command{Summary: "remove the recorded nod installation", Usage: "uninstall [--service-name NAME] [--keep-models] [--yes]", Flags: []Flag{{Name: "service-name", Kind: String, Usage: "must match the recorded service identity"}, {Name: "keep-models", Kind: Bool, Usage: "keep downloaded models and libraries"}}, Examples: []string{"nod uninstall --yes", "nod uninstall --keep-models --yes"}, Run: runUninstall})
@@ -185,26 +187,60 @@ func runConnect(c *Context) int {
 	return 0
 }
 
+// auditEntries reads every host's audit file (and the legacy RAM-only log) and returns the entries in
+// time order.
+func auditEntries(dir string, legacy ...string) ([]decisionlog.Entry, error) {
+	matches, _ := filepath.Glob(filepath.Join(dir, "*.jsonl"))
+	matches = append(matches, legacy...)
+	var all []decisionlog.Entry
+	for _, m := range matches {
+		es, err := decisionlog.ReadLast(m, 0)
+		if err != nil {
+			return nil, err
+		}
+		for _, e := range es {
+			if e.Decision != "" {
+				all = append(all, e)
+			}
+		}
+	}
+	sort.SliceStable(all, func(i, j int) bool { return all[i].Time.Before(all[j].Time) })
+	return all, nil
+}
+
 func runDecisions(c *Context) int {
-	path := paths(c).DecisionsFile()
-	entries, err := decisionlog.ReadLast(path, c.Flags.Int("n"))
+	p := paths(c)
+	cfg, _ := config.Load(p.ConfigFile)
+	dir := p.Audit(cfg)
+	read := func() ([]decisionlog.Entry, error) { return auditEntries(dir, p.DecisionsFile()) }
+	entries, err := read()
 	if err != nil {
 		c.Errorf("%v", err)
 		return ExitUnavailable
+	}
+	if n := c.Flags.Int("n"); n > 0 && len(entries) > n {
+		entries = entries[len(entries)-n:]
 	}
 	writeEntries := func(es []decisionlog.Entry) {
 		for _, e := range es {
 			if c.G.JSON {
 				b, _ := json.Marshal(e)
 				fmt.Fprintln(c.Stdout, string(b))
-			} else {
-				fmt.Fprintf(c.Stdout, "%s %-5s %-12s %s\n", e.Time.Format(time.RFC3339), e.Decision, e.Tool, e.Source)
+				continue
 			}
+			line := fmt.Sprintf("%s %-9s %-5s %-6s %s", e.Time.Format(time.RFC3339), e.Host, e.Decision, e.Tool, e.Source)
+			if c.G.Verbose && e.Command != "" {
+				line += "  " + strings.ReplaceAll(e.Command, "\n", " ⏎ ")
+			}
+			fmt.Fprintln(c.Stdout, line)
 		}
 	}
 	writeEntries(entries)
 	if c.Flags.Bool("follow") {
-		seen := len(entries)
+		last := time.Time{}
+		if len(entries) > 0 {
+			last = entries[len(entries)-1].Time
+		}
 		ticker := time.NewTicker(500 * time.Millisecond)
 		defer ticker.Stop()
 		for {
@@ -212,21 +248,89 @@ func runDecisions(c *Context) int {
 			case <-c.Ctx.Done():
 				return 0
 			case <-ticker.C:
-				current, e := decisionlog.ReadLast(path, 0)
+				current, e := read()
 				if e != nil {
 					continue
 				}
-				if len(current) < seen {
-					seen = 0
+				var fresh []decisionlog.Entry
+				for _, x := range current {
+					if x.Time.After(last) {
+						fresh = append(fresh, x)
+					}
 				}
-				if len(current) > seen {
-					writeEntries(current[seen:])
-					seen = len(current)
+				if len(fresh) > 0 {
+					writeEntries(fresh)
+					last = fresh[len(fresh)-1].Time
 				}
 			}
 		}
 	}
 	return 0
+}
+
+func runAudit(c *Context) int {
+	p := paths(c)
+	cfg, _ := config.Load(p.ConfigFile)
+	dir := p.Audit(cfg)
+	if len(c.Args) == 0 {
+		c.Errorf("usage: nod audit verify [--host H] | nod audit path")
+		return ExitUsage
+	}
+	switch c.Args[0] {
+	case "path":
+		c.Printf("%s\n", dir)
+		return 0
+	case "verify":
+		files, _ := filepath.Glob(filepath.Join(dir, "*.jsonl"))
+		sort.Strings(files)
+		type row struct {
+			Host      string `json:"host"`
+			Lines     int    `json:"lines"`
+			OK        bool   `json:"ok"`
+			Truncated bool   `json:"older_files_rotated_away,omitempty"`
+			Detail    string `json:"detail,omitempty"`
+		}
+		var rows []row
+		bad := false
+		want := c.Flags.String("host")
+		for _, f := range files {
+			host := strings.TrimSuffix(filepath.Base(f), ".jsonl")
+			if want != "" && host != want {
+				continue
+			}
+			res, err := decisionlog.Verify(f)
+			r := row{Host: host, Lines: res.Lines, OK: err == nil && res.Break == nil, Truncated: res.Truncated}
+			if err != nil {
+				r.Detail = err.Error()
+			} else if res.Break != nil {
+				r.Detail = res.Break.Error()
+			}
+			if !r.OK {
+				bad = true
+			}
+			rows = append(rows, r)
+		}
+		if c.G.JSON {
+			c.JSON(rows)
+		} else {
+			if len(rows) == 0 {
+				c.Printf("no audit files in %s yet\n", dir)
+			}
+			for _, r := range rows {
+				if r.OK {
+					c.Printf("ok      %-10s %d lines, chain intact\n", r.Host, r.Lines)
+				} else {
+					c.Printf("BROKEN  %-10s %s\n", r.Host, r.Detail)
+				}
+			}
+		}
+		if bad {
+			return ExitVerify
+		}
+		return 0
+	}
+	c.Errorf("unknown audit command %q (verify, path)", c.Args[0])
+	return ExitUsage
 }
 
 func runServe(c *Context) int {
@@ -336,7 +440,7 @@ func runCheck(c *Context) int {
 		res = api.ClassifyResponse{Decision: client.PolicyDecision(cfg.OnUnreachable), Source: "unreachable", Error: "server unreachable"}
 		c.Errorf("nod: server unreachable; answering %s per on_unreachable", res.Decision)
 	}
-	recordCheckVerdict(p.DecisionsFile(), req.Tool, res)
+	recordCheckVerdict(filepath.Join(p.Audit(cfg), "check.jsonl"), cfg.AuditCommands, req, res)
 	if c.G.JSON {
 		c.JSON(res)
 	} else {
@@ -345,10 +449,11 @@ func runCheck(c *Context) int {
 	return res.Decision.ExitCode()
 }
 
-func recordCheckVerdict(path, tool string, response api.ClassifyResponse) {
+func recordCheckVerdict(path, level string, req api.ClassifyRequest, response api.ClassifyResponse) {
+	sha, text := decisionlog.CommandFields(req.Input, level)
 	_ = decisionlog.New(path, false).Append(decisionlog.Entry{
-		Tool: tool, Decision: string(response.Decision), Source: response.Source,
-		Rules: response.Rules, Category: response.Category, Ms: response.Ms,
+		Tool: req.Tool, Command: text, CommandSHA256: sha, Cwd: req.Cwd, Decision: string(response.Decision), Source: response.Source,
+		Rules: response.Rules, Category: response.Category, Reason: response.Reason, Ms: response.Ms,
 		Host: "check", Error: response.Error,
 	})
 }
@@ -644,6 +749,8 @@ func runInstall(c *Context) int {
 	hostEnv.Home = p.Home
 	hostEnv.Getenv = c.Getenv
 	hostEnv.RuntimeDir = p.RuntimeDir
+	hostEnv.AuditDir = p.Audit(installCfg)
+	hostEnv.AuditCommands = installCfg.AuditCommands
 	// Host plugins are configured with the server and mode being installed, not with defaults.
 	installURL := strings.TrimRight(c.Flags.String("remote"), "/")
 	if installURL == "" {

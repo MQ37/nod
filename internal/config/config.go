@@ -23,7 +23,8 @@ type Paths struct {
 	ConfigDir  string // XDG_CONFIG_HOME
 	StateDir   string // state.json lives here
 	DataDir    string // models and libs
-	RuntimeDir string // decisions.jsonl (RAM)
+	RuntimeDir string // RAM-only scratch ($XDG_RUNTIME_DIR/nod)
+	AuditDir   string // persistent audit trail, one JSONL file per host ($XDG_STATE_HOME/nod/audit, or NOD_AUDIT_DIR)
 	Home       string
 }
 
@@ -42,6 +43,10 @@ func ResolvePaths(getenv func(string) string, home string, uid int, override str
 		p.ConfigFile = override
 	}
 	p.StateDir = filepath.Join(xdg("XDG_STATE_HOME", ".local/state"), "nod")
+	p.AuditDir = filepath.Join(p.StateDir, "audit")
+	if d := getenv("NOD_AUDIT_DIR"); d != "" && filepath.IsAbs(d) {
+		p.AuditDir = d
+	}
 	p.DataDir = filepath.Join(xdg("XDG_DATA_HOME", ".local/share"), "nod")
 	if r := getenv("XDG_RUNTIME_DIR"); r != "" && filepath.IsAbs(r) {
 		p.RuntimeDir = filepath.Join(r, "nod")
@@ -62,8 +67,16 @@ func ResolvePaths(getenv func(string) string, home string, uid int, override str
 // StateFile is the install record path.
 func (p Paths) StateFile() string { return filepath.Join(p.StateDir, "state.json") }
 
-// DecisionsFile is the verdict log path.
+// DecisionsFile is the legacy RAM-only verdict log (read for the transition; new lines go to AuditFile).
 func (p Paths) DecisionsFile() string { return filepath.Join(p.RuntimeDir, "decisions.jsonl") }
+
+// Audit is the audit directory in effect: NOD_AUDIT_DIR, else the config's audit_dir, else the default.
+func (p Paths) Audit(cfg Config) string {
+	if os.Getenv("NOD_AUDIT_DIR") == "" && cfg.AuditDir != "" {
+		return cfg.AuditDir
+	}
+	return p.AuditDir
+}
 
 // ModelsDir is where model GGUFs are stored.
 func (p Paths) ModelsDir() string { return filepath.Join(p.DataDir, "models") }
@@ -87,6 +100,8 @@ type Config struct {
 	TimeoutSecs    int    `json:"timeout_secs"`     // client timeout for check/hooks
 	RemoteFallback string `json:"remote_fallback"`  // with a remote set: local = fall back to the local daemon when the remote is down; none = ask
 	LocalPower     string `json:"local_power"`      // when the local model may run: plugged | always | never
+	AuditDir       string `json:"audit_dir"`        // persistent audit trail directory (empty = $XDG_STATE_HOME/nod/audit)
+	AuditCommands  string `json:"audit_commands"`   // what the audit trail stores of a command: full (default, redacted) | preview | hash
 	Engine         string `json:"engine"`           // hybrid (tiers + rules + model) | model (the model judges every call)
 	LogCommands    bool   `json:"log_commands"`     // also log command text in the verdict log
 }
@@ -94,7 +109,7 @@ type Config struct {
 // Default returns the default configuration.
 func Default() Config {
 	return Config{
-		Addr: "127.0.0.1:11096", OnUnreachable: "ask", Engine: "model", RemoteFallback: "local", LocalPower: "plugged", Mode: "shadow", TimeoutSecs: 10, IdleUnloadSecs: 900, WarmWaitSecs: 5, ServiceName: "nod",
+		Addr: "127.0.0.1:11096", OnUnreachable: "ask", Engine: "model", AuditCommands: "full", RemoteFallback: "local", LocalPower: "plugged", Mode: "shadow", TimeoutSecs: 10, IdleUnloadSecs: 900, WarmWaitSecs: 5, ServiceName: "nod",
 	}
 }
 
@@ -194,10 +209,17 @@ var keys = map[string]key{
 	"on_unreachable":   strKey(func(c *Config) *string { return &c.OnUnreachable }, enum("on_unreachable", "ask", "block", "allow")),
 	"remote_fallback":  strKey(func(c *Config) *string { return &c.RemoteFallback }, enum("remote_fallback", "local", "none")),
 	"local_power":      strKey(func(c *Config) *string { return &c.LocalPower }, enum("local_power", "plugged", "always", "never")),
-	"engine":           strKey(func(c *Config) *string { return &c.Engine }, enum("engine", "hybrid", "model")),
-	"mode":             strKey(func(c *Config) *string { return &c.Mode }, enum("mode", "shadow", "enforce")),
-	"shadow_until":     strKey(func(c *Config) *string { return &c.ShadowUntil }, nil),
-	"timeout_secs":     intKey("timeout_secs", func(c *Config) *int { return &c.TimeoutSecs }, 1),
+	"audit_dir": strKey(func(c *Config) *string { return &c.AuditDir }, func(v string) error {
+		if v != "" && !filepath.IsAbs(v) {
+			return errors.New("audit_dir must be an absolute path")
+		}
+		return nil
+	}),
+	"audit_commands": strKey(func(c *Config) *string { return &c.AuditCommands }, enum("audit_commands", "full", "preview", "hash")),
+	"engine":         strKey(func(c *Config) *string { return &c.Engine }, enum("engine", "hybrid", "model")),
+	"mode":           strKey(func(c *Config) *string { return &c.Mode }, enum("mode", "shadow", "enforce")),
+	"shadow_until":   strKey(func(c *Config) *string { return &c.ShadowUntil }, nil),
+	"timeout_secs":   intKey("timeout_secs", func(c *Config) *int { return &c.TimeoutSecs }, 1),
 	"log_commands": {
 		get: func(c *Config) string { return strconv.FormatBool(c.LogCommands) },
 		set: func(c *Config, v string) error {

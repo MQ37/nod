@@ -36,7 +36,7 @@ func paths(c *cli.Context) (config.Paths, config.Config, error) {
 }
 func hostEnv(c *cli.Context, cfg config.Config, p config.Paths) hosts.Env {
 	h, _ := os.UserHomeDir()
-	return hosts.Env{Home: h, Getenv: c.Getenv, Now: time.Now, RuntimeDir: p.RuntimeDir, Mode: func() string { return cfg.Mode }, URL: cfg.ServerURL(), OnError: cfg.OnUnreachable, Stderr: c.Stderr}
+	return hosts.Env{Home: h, Getenv: c.Getenv, Now: time.Now, RuntimeDir: p.RuntimeDir, AuditDir: p.Audit(cfg), AuditCommands: cfg.AuditCommands, Mode: func() string { return cfg.Mode }, URL: cfg.ServerURL(), OnError: cfg.OnUnreachable, Stderr: c.Stderr}
 }
 func classifier(cfg config.Config, p config.Paths) api.Classifier {
 	return cli.NewClassifier(cfg, p)

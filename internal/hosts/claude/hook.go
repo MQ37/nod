@@ -121,6 +121,7 @@ func (a *Adapter) Hook(stdin io.Reader, stdout io.Writer, cl api.Classifier) (co
 		return
 	}
 	req := api.ClassifyRequest{Tool: ev.ToolName, Input: ToolText(ev.ToolName, ev.ToolInput), Cwd: ev.Cwd}
+	rec.Command, rec.Session, rec.Cwd = req.Input, ev.SessionID, ev.Cwd
 	if ev.TranscriptPath != "" {
 		req.Task = transcript.LastUserTask(ev.TranscriptPath)
 		if conv, err := transcript.Parse(ev.TranscriptPath); err == nil {
@@ -135,6 +136,7 @@ func (a *Adapter) Hook(stdin io.Reader, stdout io.Writer, cl api.Classifier) (co
 		return
 	}
 	rec.Decision, rec.Source, rec.Rules = string(resp.Decision), resp.Source, resp.Rules
+	rec.Category, rec.Reason = resp.Category, resp.Reason
 	d = hookDecision(resp.Decision)
 	why = reason(resp)
 	return

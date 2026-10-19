@@ -131,3 +131,48 @@ func TestInstallAgentModeNeedsNoModelAndRejectsHostsThatCannotCallIt(t *testing.
 		}
 	}
 }
+
+func TestAuditTrailEndToEnd(t *testing.T) {
+	home := t.TempDir()
+	auditDir := filepath.Join(home, "state", "nod", "audit")
+	env := map[string]string{"HOME": home, "XDG_CONFIG_HOME": filepath.Join(home, "config"), "XDG_DATA_HOME": filepath.Join(home, "data"), "XDG_STATE_HOME": filepath.Join(home, "state"), "XDG_RUNTIME_DIR": filepath.Join(home, "run")}
+	run := func(args ...string) (int, string, string) {
+		var out, er bytes.Buffer
+		code := Default.Run(context.Background(), Env{Stdout: &out, Stderr: &er, Getenv: func(k string) string { return env[k] }}, args)
+		return code, out.String(), er.String()
+	}
+	// A check with an unreachable server still leaves an audit line: every action is recorded.
+	cfg := filepath.Join(home, "config", "nod")
+	if err := os.MkdirAll(cfg, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg, "config.json"), []byte(`{"remote":"http://127.0.0.1:1","remote_fallback":"none"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, cmd := range []string{"ls -la", "rm -rf /tmp/x"} {
+		if code, _, _ := run("check", "--", cmd); code != 1 {
+			t.Fatalf("check exit=%d", code)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(auditDir, "check.jsonl")); err != nil {
+		t.Fatalf("audit file missing: %v", err)
+	}
+	code, out, _ := run("decisions", "-v")
+	if code != 0 || !strings.Contains(out, "ls -la") || !strings.Contains(out, "rm -rf /tmp/x") || !strings.Contains(out, "check") {
+		t.Fatalf("decisions -v must show host and command: %q", out)
+	}
+	if code, out, _ = run("audit", "verify"); code != 0 || !strings.Contains(out, "chain intact") {
+		t.Fatalf("verify exit=%d out=%q", code, out)
+	}
+	// Tamper with a line: verify must fail with exit 4.
+	b, _ := os.ReadFile(filepath.Join(auditDir, "check.jsonl"))
+	if err := os.WriteFile(filepath.Join(auditDir, "check.jsonl"), []byte(strings.Replace(string(b), "ls -la", "ls -l ", 1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, out, _ = run("audit", "verify"); code != ExitVerify || !strings.Contains(out, "BROKEN") {
+		t.Fatalf("tampered log: exit=%d out=%q", code, out)
+	}
+	if code, out, _ = run("audit", "path"); code != 0 || strings.TrimSpace(out) != auditDir {
+		t.Fatalf("audit path: %q", out)
+	}
+}
