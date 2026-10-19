@@ -1,8 +1,7 @@
-// Package assets embeds the Hermes plugin and the Pi extension, copied verbatim from the Python
-// reference tree by tools/sync_assets.sh, except the Pi audit module pi/audit.mjs, and the OpenCode
-// plugin (both maintained here; their unit tests live in internal/hosts/{pi,opencode}/testdata so they
-// are never embedded). "all:" is needed because
-// __init__.py starts with "_".
+// Package assets embeds the Hermes plugin, the Pi extension and the OpenCode plugin. They are
+// maintained here (the Python reference tree they once came from is no longer synced); their unit
+// tests live in internal/hosts/*/pytests and internal/hosts/*/testdata so they are never embedded.
+// "all:" is needed because __init__.py starts with "_".
 package assets
 
 import "embed"
