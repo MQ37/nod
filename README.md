@@ -89,7 +89,7 @@ nod install --model fast --model-path ~/.local/share/nod/models/fast/decider-4b-
   --llama-lib-dir ~/.local/share/nod/llama/bin --host claude
 ```
 
-It prints every file and config diff and asks before changing anything. It runs as your user (systemd `--user` or launchd, no root) and starts in shadow mode. When the verdicts in `nod decisions` look right: `nod config set mode enforce`. To remove what Nod wrote: `nod uninstall --yes`. `go install` puts `nod` in `$(go env GOPATH)/bin` (usually `~/go/bin`); make sure that is on your `PATH`. Prebuilt binaries, agent-driven and remote installs: [INSTALL.md](INSTALL.md), [docs/FAQ.md](docs/FAQ.md).
+It prints every file and config diff and asks before changing anything. It runs as your user (systemd `--user` or launchd, no root) and starts in shadow mode. When the verdicts in `nod decisions` look right: `nod config set mode enforce`. To remove what Nod wrote: `nod uninstall --yes`. `go install` puts `nod` in `$(go env GOPATH)/bin` (usually `~/go/bin`); make sure that is on your `PATH`. Building from source, agent-driven and remote installs: [INSTALL.md](INSTALL.md), [docs/FAQ.md](docs/FAQ.md).
 
 ## Model tiers
 

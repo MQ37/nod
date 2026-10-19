@@ -20,7 +20,7 @@
 
 **Which platforms are built?** Linux amd64, Linux arm64, and macOS arm64. Windows and macOS amd64 are not build targets in `build.sh`.
 
-**Can I use a prebuilt binary instead of `go install`?** Yes. `go install` puts `nod` in `$(go env GOPATH)/bin` (usually `~/go/bin`); make sure that is on your `PATH`. Or download a binary from a release, verify its published checksum and `install -m 755 nod-linux-amd64 ~/.local/bin/nod`. Or build it (see [DEVELOPMENT.md](DEVELOPMENT.md)).
+**Where does `go install` put the binary, and can I build it myself?** `go install` puts `nod` in `$(go env GOPATH)/bin` (usually `~/go/bin`); make sure that is on your `PATH`. To build it yourself, run `bash ./build.sh build` and `install -m 755 dist/nod-linux-amd64 ~/.local/bin/nod` (see [DEVELOPMENT.md](DEVELOPMENT.md)).
 
 **How does an agent install Nod for someone else?** Agents get the same commands, non-interactively:
 

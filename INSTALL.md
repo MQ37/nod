@@ -1,6 +1,6 @@
 # Install
 
-Supported build targets are Linux amd64/arm64 and macOS arm64. The service runs as the current user; installation does not require root. With Go 1.25 or newer, `go install github.com/MQ37/nod/cmd/nod@latest` installs the binary into `$(go env GOPATH)/bin`. Otherwise obtain a release binary and verify its published checksum before installing it. **Nod does not download llama.cpp or models**: set those up first (the `nod` skill, `nod skill print`, has the full procedure, and `nod models list --json` has every URL and checksum).
+Supported build targets are Linux amd64/arm64 and macOS arm64. The service runs as the current user; installation does not require root. With Go 1.25 or newer, `go install github.com/MQ37/nod/cmd/nod@latest` installs the binary into `$(go env GOPATH)/bin`. Otherwise build it (see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)): `bash ./build.sh build` writes `dist/nod-linux-amd64` and friends. **Nod does not download llama.cpp or models**: set those up first (the `nod` skill, `nod skill print`, has the full procedure, and `nod models list --json` has every URL and checksum).
 
 ```sh
 install -m 755 nod-linux-amd64 ~/.local/bin/nod
