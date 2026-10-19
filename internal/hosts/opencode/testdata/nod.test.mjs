@@ -515,8 +515,9 @@ test("audit: commandFields matches decisionlog.CommandFields (same inputs as the
   assert.equal(clipRunes("😀😀", 2), "😀😀")
 })
 
-test("audit: auditDir order is nod.json, NOD_AUDIT_DIR, XDG_STATE_HOME, home (absolute only)", () => {
-  assert.equal(auditDir({ audit_dir: "/cfg" }, { NOD_AUDIT_DIR: "/env", XDG_STATE_HOME: "/st" }, "/h"), "/cfg")
+test("audit: auditDir order is NOD_AUDIT_DIR, nod.json, XDG_STATE_HOME, home (absolute only), like nod itself", () => {
+  assert.equal(auditDir({ audit_dir: "/cfg" }, { NOD_AUDIT_DIR: "/env", XDG_STATE_HOME: "/st" }, "/h"), "/env")
+  assert.equal(auditDir({ audit_dir: "/cfg" }, { XDG_STATE_HOME: "/st" }, "/h"), "/cfg")
   assert.equal(auditDir({ audit_dir: "rel" }, { NOD_AUDIT_DIR: "/env", XDG_STATE_HOME: "/st" }, "/h"), "/env")
   assert.equal(auditDir({}, { NOD_AUDIT_DIR: "env", XDG_STATE_HOME: "/st" }, "/h"), "/st/nod/audit")
   assert.equal(auditDir({}, { XDG_STATE_HOME: "st" }, "/h"), "/h/.local/state/nod/audit")

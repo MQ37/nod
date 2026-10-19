@@ -302,8 +302,9 @@ export function commandFields(cmd, level, max = AUDIT.maxCommand) {
 // else ~/.local/state/nod/audit (absolute values only).
 export function auditDir(cfg = {}, env = {}, home = "") {
   const abs = (v) => typeof v === "string" && v.trim() && path.isAbsolute(v.trim())
-  if (cfg && abs(cfg.audit_dir)) return cfg.audit_dir.trim()
+  // Same precedence as nod itself: the environment beats the config, then the XDG default.
   if (abs(env.NOD_AUDIT_DIR)) return env.NOD_AUDIT_DIR.trim()
+  if (cfg && abs(cfg.audit_dir)) return cfg.audit_dir.trim()
   if (abs(env.XDG_STATE_HOME)) return path.join(env.XDG_STATE_HOME.trim(), "nod", "audit")
   return path.join(home || os.homedir(), ".local", "state", "nod", "audit")
 }
