@@ -97,9 +97,9 @@ class AgentReviewTest(unittest.TestCase):
     def setUp(self):
         self.nod = FakeNod()
         self.tmp = tempfile.TemporaryDirectory()
-        self.log = os.path.join(self.tmp.name, "shadow.jsonl")
+        self.log = os.path.join(self.tmp.name, "audit", "hermes.jsonl")
         self.env = dict(os.environ)
-        os.environ.update(NOD_URL=self.nod.url, NOD_MODE="enforce", NOD_REVIEW="agent", NOD_LOG=self.log, NOD_TIMEOUT="2")
+        os.environ.update(NOD_URL=self.nod.url, NOD_MODE="enforce", NOD_REVIEW="agent", NOD_AUDIT_DIR=os.path.dirname(self.log), NOD_TIMEOUT="2")
         os.environ.pop("NOD_PREAPPROVE", None)
         plugin._conversations.clear(), plugin._parent.clear(), plugin._meta.clear()
         plugin._warned_no_llm = False
@@ -140,7 +140,7 @@ class AgentReviewTest(unittest.TestCase):
     def test_enforce_allow_returns_none(self):
         self.assertIsNone(self.call())
         self.assertEqual(self.nod.paths(), ["/v1/review/prompt", "/v1/review/verdict"])
-        self.assertEqual(self.records()[-1]["result"], "allow")
+        self.assertEqual(self.records()[-1]["decision"], "allow")
 
     def test_enforce_ask_escalates_to_hermes_approval(self):
         self.nod.verdict = {"decision": "ask", "reason": "not clearly approved", "source": "agent"}
@@ -160,7 +160,7 @@ class AgentReviewTest(unittest.TestCase):
             self.nod.verdict = {"decision": d, "reason": "r", "source": "agent"}
             self.assertIsNone(self.call())
             rec = self.records()[-1]
-            self.assertEqual((rec["result"], rec["review"], rec["mode"]), (d, "agent", "shadow"))
+            self.assertEqual((rec["decision"], rec["review"], rec["mode"]), (d, "agent", "shadow"))
 
     def test_t0_safe_command_skips_review(self):
         self.assertIsNone(self.call("ls -la"))
@@ -284,7 +284,7 @@ class AgentReviewTest(unittest.TestCase):
         self.llm.raises = RuntimeError("x")
         self.assertIsNone(self.call())
         rec = self.records()[-1]
-        self.assertEqual((rec["result"], rec["err"]), ("ask", "model error: RuntimeError"))
+        self.assertEqual((rec["decision"], rec["source"], rec["error"]), ("ask", "error", "model error: RuntimeError"))
 
     def test_no_conversation_still_reviews_without_conversation_field(self):
         plugin._conversations.clear()

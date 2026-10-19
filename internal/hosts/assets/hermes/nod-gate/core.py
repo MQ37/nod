@@ -286,4 +286,6 @@ def evaluate(answer, conversation):
     m.update(p_auth=answer[Q_AUTH]["probabilities"]["yes"], p_forbid=answer[Q_FORBID]["probabilities"]["yes"],
              p_match=answer[Q_MATCH]["probabilities"]["yes"], p_named=answer[Q_NAMED]["probabilities"]["yes"])
     bare = short_reply_proposal(conversation) is not None
-    return {"verdict": verdict_d3(m, bare_reply=bare), "bare_reply": bare, **{k: round(v, 4) for k, v in m.items()}}
+    probs = answer[Q_CAT]["probabilities"]
+    top = max(probs, key=probs.get) if probs else ""
+    return {"verdict": verdict_d3(m, bare_reply=bare), "bare_reply": bare, "category": top, **{k: round(v, 4) for k, v in m.items()}}

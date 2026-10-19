@@ -174,9 +174,86 @@ func TestPluginAssetsShipNoTests(t *testing.T) {
 			t.Fatalf("test file shipped inside the plugin: %s", n)
 		}
 	}
-	for _, n := range []string{"__init__.py", "core.py", "plugin.yaml"} {
+	for _, n := range []string{"__init__.py", "core.py", "audit.py", "plugin.yaml"} {
 		if _, ok := files[n]; !ok {
 			t.Fatalf("plugin file %s missing", n)
 		}
+	}
+}
+
+func TestAuditEnvLines(t *testing.T) {
+	a, envFile := newTestAdapter(t)
+	a.Env.AuditDir, a.Env.AuditCommands = "/state/nod/audit", "preview"
+	got := a.envContent("CUSTOM=keep\n", "")
+	for _, want := range []string{"\nNOD_AUDIT_DIR=/state/nod/audit\n", "\nNOD_AUDIT_COMMANDS=preview\n"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("env lacks %q: %q", want, got)
+		}
+	}
+	if user := a.envContent("NOD_AUDIT_DIR=/mine\nNOD_AUDIT_COMMANDS=hash\n", ""); strings.Count(user, "NOD_AUDIT_DIR") != 1 || strings.Count(user, "NOD_AUDIT_COMMANDS") != 1 {
+		t.Fatalf("user's own audit settings were overwritten: %q", user)
+	}
+	// without a level the plugin uses its default (full) and no line is written
+	a.Env.AuditCommands = ""
+	if got := a.envContent("", ""); strings.Contains(got, "NOD_AUDIT_COMMANDS") || !strings.Contains(got, "NOD_AUDIT_DIR=/state/nod/audit\n") {
+		t.Fatalf("no level: %q", got)
+	}
+	// a default Env still resolves an audit dir (New normalises it), so the plugin and nod agree on the file
+	if d := New(hosts.Env{Home: "/h", Getenv: func(string) string { return "" }}).envContent("", ""); !strings.Contains(d, "NOD_AUDIT_DIR=/h/.local/state/nod/audit\n") {
+		t.Fatalf("default audit dir: %q", d)
+	}
+
+	original := []byte("CUSTOM=keep\n")
+	if err := os.WriteFile(envFile, original, 0600); err != nil {
+		t.Fatal(err)
+	}
+	a.Env.AuditCommands = "hash"
+	p, err := a.PlanInstall(hosts.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p2, _ := a.PlanInstall(hosts.Options{})
+	for i := range p.Steps {
+		if p.Steps[i].Path != p2.Steps[i].Path || p.Steps[i].Diff != p2.Steps[i].Diff {
+			t.Fatalf("plan step %d not deterministic", i)
+		}
+	}
+	if err = a.Install(p); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(envFile)
+	if !strings.Contains(string(b), "\nNOD_AUDIT_DIR=/state/nod/audit\nNOD_AUDIT_COMMANDS=hash\n"+endMarker) {
+		t.Fatalf("installed env: %q", b)
+	}
+	if _, err := os.Stat(filepath.Join(a.pluginDir(), "audit.py")); err != nil {
+		t.Fatalf("audit.py not installed: %v", err)
+	}
+	if s := a.Status(); s.Mode != "shadow, review=decider" {
+		t.Fatalf("status mode changed: %q", s.Mode)
+	}
+	r, err := a.PlanRemove()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = a.Install(r); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ = os.ReadFile(envFile); !bytes.Equal(b, original) {
+		t.Fatalf("remove left audit lines: %q", b)
+	}
+	if _, err := os.Stat(a.pluginDir()); !os.IsNotExist(err) {
+		t.Fatalf("plugin dir (with audit.py) not removed: %v", err)
+	}
+}
+
+func TestStatusLastVerdictFromAuditTrail(t *testing.T) {
+	a, _ := newTestAdapter(t)
+	a.Env.AuditDir = filepath.Join(t.TempDir(), "audit")
+	if s := a.Status(); !s.LastVerdict.IsZero() {
+		t.Fatalf("no trail yet: %v", s.LastVerdict)
+	}
+	a.Env.LogVerdict(hosts.Verdict{Host: Name, Tool: "terminal", Mode: "shadow", Decision: "unchecked"})
+	if s := a.Status(); s.LastVerdict.IsZero() {
+		t.Fatal("status does not read the hermes audit trail")
 	}
 }
