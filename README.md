@@ -15,7 +15,6 @@
   <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-8b45ff?style=flat-square">
   <img alt="Go 1.25" src="https://img.shields.io/badge/Go-1.25-00ADD8?style=flat-square&logo=go&logoColor=white">
   <img alt="Platforms: Linux amd64/arm64, macOS arm64" src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20arm64-555?style=flat-square">
-  <img alt="Runs locally" src="https://img.shields.io/badge/runs-local--only-1f9d55?style=flat-square">
 </p>
 
 ---
@@ -72,7 +71,7 @@ Captured against a server running the `lite` model on a GPU: about 2 s for the l
 
 - **One judge, no allow list.** The model judges the whole call in context, where pattern lists have gaps. About 2 s per call on `lite`; an optional `hybrid` engine adds rules in front.
 - **It reads the conversation.** Approved by you: allow. Forbidden by you: block. See [below](#it-reads-the-conversation).
-- **Local.** The model runs on your machine through llama.cpp. Tool calls go to `127.0.0.1` unless you point Nod at your own server ([privacy](docs/PRIVACY.md)).
+- **Local by default.** The Decider runs on your machine through llama.cpp, and tool calls go to `127.0.0.1` unless you point Nod at your own server. With `--model agent` the review goes to the model your agent already uses instead ([privacy](docs/PRIVACY.md)).
 - **Fails safe.** A cold, slow or broken model never turns into an allow: the answer is ask.
 - **Installs safe.** Every install prints its full plan, backs up host config first, and can be rolled back.
 
