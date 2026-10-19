@@ -8,9 +8,9 @@
 | `remote` | empty | Remote server URL; when set, hooks and `check` ask it first instead of the local `addr`. Set with `connect URL` or install `--remote URL`. |
 | `remote_fallback` | `local` | With a remote set: `local` falls back to the local daemon when the remote cannot answer; `none` goes straight to `on_unreachable`. |
 | `local_power` | `plugged` | When the local daemon may load and run its model: `plugged` = not while on battery, `always`, or `never`. `nod serve --power` overrides it. |
-| `model` | empty until install | Model size label: `fast`, `lite` or `full` (lite adds the chat-layout file check), or `agent` (no local model: the host plugin asks the agent's own model; see README). |
+| `model` | empty until install | Model size label: `fast`, `lite` or `full` (lite adds the chat-layout file check), or `agent` (no local model: the host plugin asks the agent's own model; see [AGENT_REVIEW.md](AGENT_REVIEW.md)). |
 | `llama_lib_dir` | empty | Directory with your own llama.cpp libraries (for a GPU build); searched after `NOD_LLAMA_LIB_DIR`. |
-| `engine` | `model` | `model`: the model judges every call. `hybrid`: a shell lexer and rule set in front of the model (routine commands allowed without a model call; see README). Also `nod serve --engine`. |
+| `engine` | `model` | `model`: the model judges every call. `hybrid`: a shell lexer and rule set in front of the model (routine commands allowed without a model call; see [HOW_IT_WORKS.md](HOW_IT_WORKS.md#optional-hybrid-engine)). Also `nod serve --engine`. |
 | `model_path` | empty until install | Your Decider GGUF; `install --model-path` records it. Nod never downloads it. |
 | `service_name` | `nod` | User service identity; validated as lowercase letters, digits and hyphens. `NOD_SERVICE_NAME` overrides it; commands that support it accept `--service-name`. |
 | `mode` | `shadow` | `shadow` logs decisions without changing host permission flow; `enforce` applies adapter behavior. |

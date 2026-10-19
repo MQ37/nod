@@ -26,7 +26,7 @@ curl -s http://192.0.2.10:11096/healthz
 
 ## No local model: the agent's own model reviews
 
-`nod install --model agent --host hermes` (or `opencode`) needs no GGUF and no llama.cpp. The host plugin sends one extra request per reviewed call to the model the agent already runs, and Nod's server (`nod serve --model agent`) builds the prompt and applies the pipeline. Claude Code and Pi are not supported in this mode. Cost, privacy and failure behaviour: README, "Auto review with the agent's own model".
+`nod install --model agent --host hermes` (or `opencode`) needs no GGUF and no llama.cpp. The host plugin sends one extra request per reviewed call to the model the agent already runs, and Nod's server (`nod serve --model agent`) builds the prompt and applies the pipeline. Claude Code and Pi are not supported in this mode. Cost, privacy and failure behaviour: [docs/AGENT_REVIEW.md](docs/AGENT_REVIEW.md).
 
 ## Remote first, local backup, battery rule
 
