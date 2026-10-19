@@ -6,7 +6,7 @@ import assert from "node:assert/strict"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import plugin, { buildRequest, clip, createNod, extractJson, loadConfig, mapDecision, enforceError, redact, unwrap, userTurns, NO_TOOLS } from "../../assets/opencode/nod.js"
+import plugin, { createNodV2, userTurnsV2, setup as setupV2, buildRequest, clip, createNod, extractJson, loadConfig, mapDecision, enforceError, redact, unwrap, userTurns, NO_TOOLS } from "../../assets/opencode/nod.js"
 
 const MODEL = { providerID: "anthropic", modelID: "claude-x" }
 
@@ -132,9 +132,9 @@ test("mapDecision and enforceError", () => {
 })
 
 test("loadConfig defaults, file values and env overrides", () => {
-  assert.deepEqual(loadConfig("", {}), { url: "http://127.0.0.1:11096", mode: "shadow", review: "server", timeout_ms: 15000, tools: ["bash"] })
+  assert.deepEqual(loadConfig("", {}), { url: "http://127.0.0.1:11096", mode: "shadow", review: "server", timeout_ms: 15000, tools: ["bash", "shell"] })
   const c = loadConfig('{"url":"http://h:1/","mode":"enforce","review":"agent","timeout_ms":5,"tools":["bash","nope"]}', { NOD_MODE: "shadow" })
-  assert.deepEqual(c, { url: "http://h:1", mode: "shadow", review: "agent", timeout_ms: 5, tools: ["bash"] })
+  assert.deepEqual(c, { url: "http://h:1", mode: "shadow", review: "agent", timeout_ms: 5, tools: ["bash", "shell"] })
   assert.equal(loadConfig("{broken", { NOD_REVIEW: "agent", NOD_URL: "http://x" }).review, "agent")
   assert.equal(loadConfig({ mode: "ENFORCE" }, {}).mode, "enforce")
 })
@@ -320,4 +320,121 @@ test("a review session created after the timeout is still deleted", async () => 
   await new Promise((r) => setTimeout(r, 200))
   assert.deepEqual(client.calls.filter((c) => c[0] === "delete").map((c) => c[1]), ["ses_child1"])
   assert.equal(client.calls.filter((c) => c[0] === "prompt").length, 0)
+})
+
+
+// ---- OpenCode v2 (setup(ctx), ctx.tool.hook, ctx.session.get/context, ctx.generate.text) ----
+
+function fakeCtx(opts = {}) {
+  const calls = []
+  const hooks = {}
+  const msgs = opts.msgs || [
+    { id: "m1", type: "user", text: "please clean the build dir", time: {}, files: [], agents: [] },
+    { id: "m2", type: "assistant", text: "ASSISTANT TEXT", time: {}, files: [], agents: [] },
+    { id: "m3", type: "tool", text: "TOOL OUTPUT", time: {}, files: [], agents: [] },
+  ]
+  const ctx = {
+    location: { directory: "/w/proj" },
+    tool: { hook: async (name, fn) => { hooks[name] = fn } },
+    session: {
+      get: async ({ sessionID }) => { calls.push(["get", sessionID]); return { id: sessionID, model: opts.model === undefined ? { providerID: "anthropic", id: "claude-x", variant: "" } : opts.model } },
+      context: async ({ sessionID }) => { calls.push(["context", sessionID]); return msgs },
+    },
+    generate: {
+      text: async (req) => {
+        calls.push(["generate", req])
+        if (opts.generateError) throw new Error(opts.generateError)
+        return { text: opts.reply ?? '{"category": 3, "auth": "yes", "forbid": "no", "match": "no", "named": "no"}' }
+      },
+    },
+  }
+  return { ctx, calls, hooks }
+}
+
+const shellEvent = (command = "ls -la", tool = "shell") => ({ tool, sessionID: "ses_1", agent: "build", messageID: "msg_1", id: "call_1", input: { command } })
+
+function setupNodV2({ mode = "enforce", review = "server", routes, ctxOpts } = {}) {
+  const c = fakeCtx(ctxOpts)
+  const fetch = fakeFetch(routes || {})
+  const nod = createNodV2({ ctx: c.ctx, config: loadConfig({ mode, review }, {}), fetch, logPath: null, now: () => new Date("2026-10-18T12:00:00Z") })
+  return { ...c, nod, fetch }
+}
+
+test("v2: the default export has id, setup and server; setup registers execute.before", async () => {
+  assert.equal(plugin.id, "nod")
+  assert.equal(typeof plugin.setup, "function")
+  assert.equal(typeof plugin.server, "function")
+  const { ctx, hooks } = fakeCtx()
+  await setupV2(ctx)
+  assert.equal(typeof hooks["execute.before"], "function")
+})
+
+test("v2: userTurnsV2 keeps only the human's messages", () => {
+  const out = userTurnsV2([{ type: "user", text: "a" }, { type: "assistant", text: "SECRET" }, { type: "tool", text: "OUT" }, { type: "user", text: " b " }, { type: "user", text: "" }])
+  assert.deepEqual(out, ["a", "b"])
+  assert.deepEqual(userTurnsV2(undefined), [])
+})
+
+test("v2: shell and bash are both gated; other tools are ignored", async () => {
+  for (const tool of ["shell", "bash"]) {
+    const { nod, fetch } = setupNodV2({ routes: { "/v1/classify": jsonRes({ decision: "allow", reason: "r", source: "model" }) } })
+    await nod.onToolBefore(shellEvent("ls", tool))
+    assert.equal(fetch.calls.length, 1, tool)
+  }
+  const { nod, fetch } = setupNodV2({ routes: {} })
+  await nod.onToolBefore({ tool: "read", sessionID: "s", input: { filePath: "/x" } })
+  assert.equal(fetch.calls.length, 0)
+})
+
+test("v2: enforce maps allow/ask/block; shadow never throws", async () => {
+  for (const [decision, re] of [["allow", null], ["block", /nod: blocked: r\./], ["ask", /explicit approval \(r\)/]]) {
+    const { nod } = setupNodV2({ routes: { "/v1/classify": jsonRes({ decision, reason: "r", source: "model" }) } })
+    const p = nod.onToolBefore(shellEvent())
+    if (re) await assert.rejects(p, re)
+    else await p
+  }
+  const { nod } = setupNodV2({ mode: "shadow", routes: { "/v1/classify": jsonRes({ decision: "block", reason: "r", source: "model" }) } })
+  await nod.onToolBefore(shellEvent())
+})
+
+test("v2: server review sends the command and only the human's turns", async () => {
+  const { nod, fetch } = setupNodV2({ routes: { "/v1/classify": jsonRes({ decision: "allow", reason: "r", source: "model" }) } })
+  await nod.onToolBefore(shellEvent("git status"))
+  const body = fetch.calls[0].body
+  assert.equal(body.tool, "Bash")
+  assert.equal(body.input, "git status")
+  assert.equal(body.cwd, "/w/proj")
+  assert.deepEqual(body.conversation, [{ role: "user", text: "please clean the build dir" }])
+  const sent = JSON.stringify(body)
+  assert.ok(!sent.includes("ASSISTANT TEXT") && !sent.includes("TOOL OUTPUT"))
+})
+
+test("v2: agent review asks the session's own model through ctx.generate.text, then posts the verdict", async () => {
+  const { nod, fetch, calls } = setupNodV2({
+    review: "agent",
+    routes: {
+      "/v1/review/prompt": jsonRes({ system: "SYS", user: "USER", keys: ["category"] }),
+      "/v1/review/verdict": jsonRes({ decision: "allow", reason: "approved", source: "agent" }),
+    },
+  })
+  await nod.onToolBefore(shellEvent("make test"))
+  const gen = calls.find((c) => c[0] === "generate")[1]
+  assert.deepEqual(gen.model, { providerID: "anthropic", id: "claude-x" })
+  assert.ok(gen.prompt.includes("SYS") && gen.prompt.includes("USER"))
+  const verdict = fetch.calls.find((c) => c.path === "/v1/review/verdict").body
+  assert.equal(verdict.answers.category, 3)
+  assert.equal(verdict.request.input, "make test")
+})
+
+test("v2: every failure is ask (never allow)", async () => {
+  for (const ctxOpts of [{ generateError: "boom" }, { reply: "no json here" }, { model: null }]) {
+    const { nod } = setupNodV2({
+      review: "agent",
+      ctxOpts,
+      routes: { "/v1/review/prompt": jsonRes({ system: "S", user: "U", keys: [] }), "/v1/review/verdict": jsonRes({ decision: "allow", reason: "x", source: "agent" }) },
+    })
+    await assert.rejects(nod.onToolBefore(shellEvent()), /explicit approval/)
+  }
+  const { nod } = setupNodV2({ routes: {} }) // server unreachable
+  await assert.rejects(nod.onToolBefore(shellEvent()), /explicit approval/)
 })

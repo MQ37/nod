@@ -26,12 +26,14 @@ export const DEFAULTS = Object.freeze({
   mode: "shadow",
   review: "server",
   timeout_ms: 15000,
-  tools: ["bash"],
+  tools: ["bash", "shell"],
 })
 
 // OpenCode tool id -> the tool name nod knows and the text it judges. Keep it small and explicit.
 export const TOOL_MAP = Object.freeze({
+  // OpenCode v1 calls the shell tool "bash", v2 calls it "shell".
   bash: { name: "Bash", input: (args) => (args && typeof args.command === "string" ? args.command : "") },
+  shell: { name: "Bash", input: (args) => (args && typeof args.command === "string" ? args.command : "") },
 })
 
 // Every tool off in the review session ("*" covers the rest; permissions are keyed by these names).
@@ -61,6 +63,9 @@ export function loadConfig(raw, env = {}) {
   if (typeof file.review === "string") cfg.review = file.review
   if (Number.isFinite(file.timeout_ms) && file.timeout_ms > 0) cfg.timeout_ms = file.timeout_ms
   if (Array.isArray(file.tools)) cfg.tools = file.tools.filter((t) => typeof t === "string" && TOOL_MAP[t])
+  // "bash" (v1) and "shell" (v2) are the same tool: gating one gates the other.
+  if (cfg.tools.includes("bash") && !cfg.tools.includes("shell")) cfg.tools.push("shell")
+  if (cfg.tools.includes("shell") && !cfg.tools.includes("bash")) cfg.tools.push("bash")
   if (env.NOD_URL) cfg.url = String(env.NOD_URL).trim()
   if (env.NOD_MODE) cfg.mode = String(env.NOD_MODE)
   if (env.NOD_REVIEW) cfg.review = String(env.NOD_REVIEW)
@@ -420,6 +425,96 @@ export function createNod(deps) {
   return { hooks, children, models, turns }
 }
 
+// ---------------------------------------------------------------------------------------------
+// OpenCode v2. v2 ignores server(); a plugin is {id, setup(ctx)} and registers hooks in setup.
+// Verified against opencode 2.0.32: the hook is ctx.tool.hook("execute.before", handler) with the event
+// {tool, sessionID, agent, messageID, id, input}; the shell tool is "shell" with input.command;
+// ctx.session.get({sessionID}) -> {model:{providerID,id,variant}, ...}; ctx.session.context({sessionID})
+// -> messages [{type, text, ...}] where the human's are type "user"; ctx.generate.text({model, prompt})
+// is a direct model call with no session, no tools and no history.
+
+// Human turns from ctx.session.context() output. Never assistant, tool or synthetic items.
+export function userTurnsV2(messages) {
+  if (!Array.isArray(messages)) return []
+  const out = []
+  for (const m of messages) {
+    if (!m || m.type !== "user" || typeof m.text !== "string") continue
+    const t = m.text.trim()
+    if (t) out.push(t)
+  }
+  return out.slice(-MAX_TURNS)
+}
+
+export function createNodV2(deps) {
+  const ctx = deps.ctx
+  const cfg = deps.config || loadConfig({}, {})
+  const doFetch = deps.fetch || globalThis.fetch
+  const logPath = deps.logPath === undefined ? defaultLogPath() : deps.logPath
+  const now = deps.now || (() => new Date())
+  const gated = new Set(cfg.tools)
+
+  async function post(p, body, signal) {
+    const res = await doFetch(cfg.url + p, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal })
+    if (!res || !res.ok) {
+      const status = res ? res.status : "no response"
+      throw new Error(status === 400 && p === "/v1/review/verdict" ? "invalid review answers" : `nod server ${p}: HTTP ${status}`)
+    }
+    return await res.json()
+  }
+
+  async function sessionContext(sid) {
+    const [info, msgs] = await Promise.all([ctx.session.get({ sessionID: sid }), ctx.session.context({ sessionID: sid })])
+    return { model: info && info.model, turns: userTurnsV2(msgs) }
+  }
+
+  async function agentReview(req, model, signal) {
+    const p = await post("/v1/review/prompt", req, signal)
+    if (!p || typeof p.system !== "string" || typeof p.user !== "string") throw new Error("bad review prompt from nod")
+    if (!model || !model.providerID || !model.id) throw new Error("the session's model is not known")
+    const out = await ctx.generate.text({ model: { providerID: model.providerID, id: model.id }, prompt: p.system + "\n\n" + p.user })
+    const answers = extractJson(out && typeof out.text === "string" ? out.text : "")
+    if (!answers) throw new Error("the review reply had no JSON object")
+    return await post("/v1/review/verdict", { request: req, answers }, signal)
+  }
+
+  // {decision, reason, source}; every failure is ask.
+  async function review(sid, toolName, input, cwd) {
+    const ctl = new AbortController()
+    const run = async () => {
+      const { model, turns } = await sessionContext(sid)
+      const req = buildRequest({ tool: toolName, input, cwd, turns })
+      const resp = cfg.review === "agent" ? await agentReview(req, model, ctl.signal) : await post("/v1/classify", req, ctl.signal)
+      return mapDecision(resp)
+    }
+    try {
+      return await withTimeout(run(), cfg.timeout_ms, () => ctl.abort())
+    } catch (err) {
+      return { decision: "ask", reason: `nod could not review this call: ${short(err)}`, source: "error" }
+    }
+  }
+
+  async function onToolBefore(event) {
+    const tool = event && event.tool
+    if (!gated.has(tool) || !TOOL_MAP[tool]) return
+    const spec = TOOL_MAP[tool]
+    const args = (event && event.input) || {}
+    const cwd = typeof args.workdir === "string" && args.workdir ? args.workdir : (ctx.location && ctx.location.directory) || ""
+    const v = await review(event.sessionID, spec.name, spec.input(args), cwd)
+    appendLog(logPath, { time: now().toISOString(), host: "opencode", mode: cfg.mode, review: cfg.review, tool: spec.name, decision: v.decision, source: v.source, reason: clip(v.reason, 300) })
+    if (cfg.mode !== "enforce") return
+    const err = enforceError(v.decision, v.reason)
+    if (err) throw err
+  }
+
+  return { onToolBefore }
+}
+
+export async function setup(ctx) {
+  const config = loadConfig(readConfigFile(), process.env)
+  const nod = createNodV2({ ctx, config })
+  await ctx.tool.hook("execute.before", nod.onToolBefore)
+}
+
 function readConfigFile() {
   try {
     return fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "nod.json"), "utf8")
@@ -433,7 +528,7 @@ export async function server(input) {
   return createNod({ client: input.client, directory: input.directory, config }).hooks
 }
 
-// OpenCode v2 rejects a plugin without "an id and an effect or setup function" (error: "Plugin must
-// export a default definition with an id and an effect or setup function"). The hooks come from
-// server(); setup() has nothing to prepare.
-export default { id: "nod", server, setup() {} }
+// One definition for both generations (OpenCode documents this): v1 calls server(), v2 ignores it and
+// calls setup(ctx). v2 refuses a definition without an id and a setup or effect function
+// (error: "Plugin must export a default definition with an id and an effect or setup function").
+export default { id: "nod", server, setup }

@@ -66,7 +66,7 @@ func TestInstallStatusIdempotentRemove(t *testing.T) {
 		t.Fatal("plugin file differs from the embedded asset or lacks the marker")
 	}
 	set := readSettings(t, a)
-	if set.ManagedBy != "nod" || set.Mode != "enforce" || set.Review != "server" || set.URL != "http://127.0.0.1:11096" || set.TimeoutMS != 15000 || len(set.Tools) != 1 || set.Tools[0] != "bash" {
+	if set.ManagedBy != "nod" || set.Mode != "enforce" || set.Review != "server" || set.URL != "http://127.0.0.1:11096" || set.TimeoutMS != 15000 || len(set.Tools) != 2 || set.Tools[0] != "bash" || set.Tools[1] != "shell" {
 		t.Fatalf("settings: %#v", set)
 	}
 	if st, _ := os.Stat(a.settingsFile()); st.Mode().Perm() != 0o600 {

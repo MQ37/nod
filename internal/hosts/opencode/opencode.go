@@ -87,7 +87,7 @@ func agentReview(opts hosts.Options) bool {
 }
 
 func (a *Adapter) settings(opts hosts.Options) []byte {
-	s := Settings{ManagedBy: managedBy, URL: a.Env.URL, Mode: a.Env.CurrentMode(), Review: "server", TimeoutMS: 15000, Tools: []string{"bash"}}
+	s := Settings{ManagedBy: managedBy, URL: a.Env.URL, Mode: a.Env.CurrentMode(), Review: "server", TimeoutMS: 15000, Tools: []string{"bash", "shell"}}
 	if agentReview(opts) {
 		s.Review, s.TimeoutMS = reviewAgent, 60000 // a chat-model request takes longer than the Decider
 	}
