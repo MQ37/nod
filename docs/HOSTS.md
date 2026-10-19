@@ -18,7 +18,7 @@ Shadow mode classifies/logs but writes no stdout answer, leaving Claude's own pr
 
 ## Hermes
 
-The binary embeds and copies the plugin into `~/.hermes/plugins/nod-gate/` and adds managed `NOD_URL`, `NOD_MODE`, and `NOD_TIMEOUT` lines to `~/.hermes/.env`, without overwriting user-defined values. The plugin must be enabled in Hermes (`hermes plugins enable nod-gate`) and Hermes restarted. It runs inside Hermes' Python plugin runtime. Status reports whether files match and whether the plugin is enabled; the adapter does not edit the enabled-plugin setting. Removal deletes the copied plugin and managed env block; disable the plugin through Hermes as needed.
+The binary embeds and copies the plugin into `~/.hermes/plugins/nod-gate/` and adds managed `NOD_URL`, `NOD_MODE`, `NOD_TIMEOUT`, `NOD_AUDIT_DIR` and (when set) `NOD_AUDIT_COMMANDS` lines to `~/.hermes/.env`, without overwriting user-defined values. The plugin must be enabled in Hermes (`hermes plugins enable nod-gate`) and Hermes restarted. It runs inside Hermes' Python plugin runtime. Status reports whether files match and whether the plugin is enabled; the adapter does not edit the enabled-plugin setting. Removal deletes the copied plugin and managed env block; disable the plugin through Hermes as needed.
 
 ### Agent review (`nod install --model agent`)
 
@@ -28,12 +28,16 @@ With `hosts.Options.Review = "agent"` the managed env block also gets `NOD_REVIE
 2. asks the model the Hermes session already runs, through Hermes' plugin LLM access (`ctx.llm.complete`, no provider or model override, temperature 0, at most 200 tokens), and takes the first JSON object from the reply;
 3. sends the answers to `POST /v1/review/verdict`, which turns them into allow, ask or block with the same pipeline as Decider answers.
 
-In enforce mode allow passes, ask goes to Hermes' own approval prompt, and block vetoes the call. Shadow mode only logs to `hermes-shadow.jsonl`.
+In enforce mode allow passes, ask goes to Hermes' own approval prompt, and block vetoes the call. Shadow mode only writes the audit trail.
 
 - **Cost:** one extra request per gated call on the agent's own model. It is billed to the same account and counts in its usage and rate limits.
 - **Injection:** the reviewer sees only the call (redacted and clipped) and the user's own messages, plus the assistant message each one replies to. It never sees tool output or file contents. The prompt text comes from the nod server, which tells the model to treat all of it as data.
 - **Fail safe:** unlike the Decider path, which fails open, any failure here means ask, never allow. This covers an unreachable nod server, a Hermes without `ctx.llm` (logged once), a model error or timeout, an unparsable reply, and HTTP 400 for invalid answers. In enforce mode Hermes then shows its approval prompt with "nod: review unavailable (...)". A review never starts a second review from inside itself.
 - **Timeouts:** Hermes fails closed and blocks the tool call when a `pre_tool_call` hook runs longer than `plugins.hook_callback_timeout` (default 30 s). The plugin therefore caps the model call at `NOD_TIMEOUT` (at most 20 s), with a 3 s budget for each nod server request, and asks when the model call runs out of time. A slow model shows up as approval prompts, not as blocked calls.
+
+### Audit trail
+
+The plugin writes `<audit dir>/hermes.jsonl` itself (`audit.py`), in the same format as nod's own hosts, so `nod audit verify` checks it: one JSON line per call, chained by the sha256 of the previous line, rotated at 10 MiB (five old files kept), appends serialised with a lock file, directory 0700 and files 0600. The audit dir is `NOD_AUDIT_DIR` from the managed env block (nod writes the dir it uses), else `$XDG_STATE_HOME/nod/audit`, else `~/.local/state/nod/audit`. Every tool call the `pre_tool_call` hook sees gets a line in shadow and enforce mode (nothing with `NOD_MODE=off`): gated calls with the decision, source, review (`decider` or `agent`, with the reviewing model when Hermes exposes it), timing and what the plugin answered Hermes; failed reviews as `ask` with source `error`; and calls nod does not judge as `unchecked`, with source `not-gated` (other tools), `read-only` (skipped by the plugin's own rules) or `no-context`. Answers to Hermes' own approval prompt are logged with source `hermes-approval`. The command text is redacted and stored per `NOD_AUDIT_COMMANDS`: `full` (default, 4000 characters), `preview` (160) or `hash` (only `command_sha256`); for tools that are not gated it is the file path or the arguments as JSON, clipped to 500 characters. Session ids are stored as a short hash. A failed write is logged once as a warning and never changes the hook's answer. This replaces the RAM-only `hermes-shadow.jsonl` and the `NOD_LOG` setting.
 
 ## Pi / Oh My Pi
 

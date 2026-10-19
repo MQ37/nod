@@ -1,10 +1,11 @@
 """nod-gate: Hermes plugin that asks a Decider model whether the user's own messages approved a tool call.
 
-Shadow mode (default) logs verdicts and blocks nothing. Enforce mode returns {"action": "block"} only for the Decider's "block" verdict; "ask" and
+Shadow mode (default) records verdicts in the audit trail and blocks nothing. Enforce mode returns {"action": "block"} only for the Decider's "block" verdict; "ask" and
 "allow" pass through to Hermes' own approval flow, so this plugin can only make Hermes stricter. Any error, timeout or missing context fails open.
 
 Env: NOD_URL (default http://127.0.0.1:11096), NOD_MODE=shadow|enforce|off, NOD_TIMEOUT (seconds, default 2.5),
-     NOD_LOG (default $XDG_RUNTIME_DIR/nod/hermes-shadow.jsonl, RAM on Linux; "off" disables),
+     NOD_AUDIT_DIR / NOD_AUDIT_COMMANDS=full|preview|hash: the persistent audit trail <dir>/hermes.jsonl (see audit.py), one hash-chained line for
+       every tool call this hook sees, gated or not (decision "unchecked" for calls nod does not judge). It never changes an answer.
      NOD_ASK=approve (experimental, enforce mode, newer Hermes: turn "ask" verdicts into Hermes' own human-approval prompt),
      NOD_PREAPPROVE=off|approved|auto (default off; acts in every mode): answer Hermes' own dangerous-command approval for ONE terminal call when the Decider says the
        user's own messages approved exactly this command (approved) or the command is routine (auto, additionally). One-shot: the approval is withdrawn right after the call.
@@ -24,7 +25,7 @@ import threading
 import time
 import urllib.error
 
-from . import core
+from . import audit, core
 
 logger = logging.getLogger(__name__)
 
@@ -42,33 +43,6 @@ HTTP_TIMEOUT = 3.0          # each call to the local nod server
 def _mode() -> str:
     m = os.environ.get("NOD_MODE", "shadow").strip().lower()
     return m if m in ("shadow", "enforce", "off") else "shadow"
-
-
-def _log_path():
-    raw = os.environ.get("NOD_LOG")
-    if raw == "off":
-        return None
-    if raw:
-        return raw
-    base = os.environ.get("XDG_RUNTIME_DIR") or os.path.join(os.path.expanduser("~"), ".cache")
-    return os.path.join(base, "nod", "hermes-shadow.jsonl")
-
-
-def _log(rec: dict) -> None:
-    """append-only JSONL, mode 600; never raises (logging must not change behaviour)"""
-    try:
-        path = _log_path()
-        if not path:
-            return
-        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
-        line = (json.dumps({"ts": round(time.time(), 3), **rec}, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8", "replace")
-        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
-        try:
-            os.write(fd, line)
-        finally:
-            os.close(fd)
-    except Exception:
-        pass
 
 
 def _root(session_id: str) -> str:
@@ -178,66 +152,97 @@ def on_subagent_start(parent_session_id=None, child_session_id=None, **_):
     return None
 
 
+def _cwd() -> str:
+    try:
+        return os.getcwd()
+    except Exception:
+        return ""
+
+
+def _ms(t0) -> int:
+    return round((time.time() - t0) * 1000)
+
+
+def _describe(args) -> str:
+    """short description of an ungated call's input: a file path, a command, else the args as JSON"""
+    a = args if isinstance(args, dict) else {}
+    for k in ("path", "file_path", "command"):
+        if isinstance(a.get(k), str) and a[k]:
+            return a[k]
+    try:
+        return json.dumps(args, ensure_ascii=False, sort_keys=True, default=str)
+    except Exception:
+        return str(args)
+
+
+def _audit(rec: dict, text, ret=None, limit=None, **fields):
+    """one audit line (see audit.py), written after the verdict and before the hook returns; returns ret unchanged and never raises"""
+    try:
+        sha, cmd = audit.command_fields(text, limit=limit)
+        audit.write(**{"answer": ret.get("action", "") if isinstance(ret, dict) else "none", **rec, "command": cmd, "command_sha256": sha,
+                       "cwd": _cwd(), **fields})
+    except Exception:
+        pass
+    return ret
+
+
 def on_pre_tool_call(tool_name: str = "", args=None, session_id: str = "", task_id: str = "", tool_call_id: str = "", **_):
     mode = _mode()
     call_id = str(tool_call_id or "")
     for stale in [c for c in list(_granted) if c != call_id]:   # never leave an earlier one-shot approval behind
         _revoke(stale)
-    if mode == "off" or tool_name not in core.GATED:
+    if mode == "off":
         return None
     t0 = time.time()
     sid = session_id or task_id or ""
+    rec = {"host": audit.HOST, "session": audit.hash_session(str(sid)), "mode": mode, "tool": str(tool_name or "")}
+    if tool_name not in core.GATED:   # the trail shows what nod did not judge, too
+        return _audit(rec, _describe(args), limit=500, decision="unchecked", source="not-gated")
+    review = "agent" if _review_mode() == "agent" else "decider"
     root = _root(sid)
-    base = {"sid": sid[:12], "tool": tool_name, "mode": mode, "sub": root != sid}
+    text = _describe(args)
     if _reviewing.get():      # never start a second review from inside one; never allow either
-        _log({**base, "review": "agent", "result": "ask", "err": "reentrant"})
-        return _ask_unavailable("nested review") if mode == "enforce" else None
+        return _audit(rec, text, _ask_unavailable("nested review") if mode == "enforce" else None,
+                      review=review, decision="ask", source="error", error="nested review")
     try:
         mapped = core.tool_for_decider(tool_name, args)
         if mapped is None:
-            return None
+            return _audit(rec, text, limit=500, decision="unchecked", source="not-gated")
         tool, text = mapped
-        shown = core.redact(text)[:300]
         with _lock:
             conv = list(_conversations.get(root) or [])
-            meta = dict(_meta.get(root) or {})
-        if _review_mode() == "agent":
-            return _agent_gate(base, mode, tool, text, shown, conv, t0)
+        if review == "agent":
+            return _agent_gate(rec, mode, tool, text, conv, t0)
         if not conv:
-            _log({**base, "cmd": shown, "result": "no_context"})
-            return None
+            return _audit(rec, text, decision="unchecked", source="no-context")
         flagged = _hermes_flag(tool_name, args) if _preapprove_enabled() else None
         if core.fast_safe(tool, text) and not (flagged and flagged[0]):   # a command Hermes itself would ask about always goes to the model when pre-approve is on
-            _log({**base, "cmd": shown, "result": "t0_safe"})
-            return None
+            return _audit(rec, text, decision="unchecked", source="read-only")
         url = os.environ.get("NOD_URL", "http://127.0.0.1:11096")
         timeout = float(os.environ.get("NOD_TIMEOUT", "2.5"))
         context = core.render("", tool, text, os.getcwd(), conv)
         res = core.evaluate(core.decide(url, context, timeout), conv)
         verdict = core.NAME[res["verdict"]]
-        _log({**base, "cmd": shown, "result": verdict, "ms": round((time.time() - t0) * 1000), "users": sum(1 for m in conv if m["role"] == "user"),
-              "platform": meta.get("platform"), "p_allow": res["allow"], "p_block": res["block"],
-              **{k: res[k] for k in ("p_auth", "p_forbid", "p_match", "p_named", "bare_reply")}})
-        pre, why_not = None, "off"
+        pre = None
         try:
-            pre, why_not = _maybe_preapprove(tool_name, args, res, call_id, flagged)
-        except Exception as exc:  # a failed pre-approval just leaves Hermes' own prompt in place
-            pre, why_not = None, f"skip:error:{type(exc).__name__}"
-        if _preapprove_enabled() and tool_name == "terminal":
-            _log({**base, "result": "preapproved" if pre else "not_preapproved", "why": why_not, "nod": verdict,
-                  "hermes_flag": (flagged[2] if flagged and flagged[0] else None), **(pre or {})})
+            pre, _why = _maybe_preapprove(tool_name, args, res, call_id, flagged)
+        except Exception:  # a failed pre-approval just leaves Hermes' own prompt in place
+            pre = None
+        ret = None
         if mode == "enforce" and verdict == "ask" and os.environ.get("NOD_ASK", "").strip().lower() == "approve":
             # experimental, newer Hermes only (ignored by older builds): escalate to Hermes' own human-approval prompt. The plugin never approves anything itself.
-            return {"action": "approve", "message": "nod-gate: no message of the user clearly approves exactly this; asking you to confirm."}
-        if mode == "enforce" and verdict == "block":
+            ret = {"action": "approve", "message": "nod-gate: no message of the user clearly approves exactly this; asking you to confirm."}
+        elif mode == "enforce" and verdict == "block":
             why = "the user told you not to do this" if res["p_forbid"] >= 0.5 else "it looks destructive or out of scope and none of the user's messages approve exactly this"
-            return {"action": "block", "message": f"nod-gate: blocked ({why}). If the user really wants this, tell them exactly what would run and on which target, "
-                                                  "ask them to confirm in chat, then try again."}
+            ret = {"action": "block", "message": f"nod-gate: blocked ({why}). If the user really wants this, tell them exactly what would run and on which target, "
+                                                 "ask them to confirm in chat, then try again."}
+        extra = {"answer": "preapproved:" + pre["preapproved"]} if pre else {}
+        reason = " ".join(f"{k}={res[k]}" for k in ("allow", "block", "p_auth", "p_forbid", "p_match", "p_named"))
+        return _audit(rec, text, ret, review="decider", decision=verdict, source="model", category=str(res.get("category") or "")[:120],
+                      reason=reason[:300], ms=_ms(t0), **extra)
     except Exception as exc:  # Decider path: fail open (unreachable server, timeout, bad answer); agent review: fail safe (ask)
-        _log({**base, "result": "error", "err": type(exc).__name__, "ms": round((time.time() - t0) * 1000)})
-        if mode == "enforce" and _review_mode() == "agent":
-            return _ask_unavailable(f"error: {type(exc).__name__}")
-    return None
+        ret = _ask_unavailable(f"error: {type(exc).__name__}") if mode == "enforce" and review == "agent" else None
+        return _audit(rec, text, ret, review=review, decision="ask", source="error", error=type(exc).__name__, ms=_ms(t0))
 
 
 def _review_mode() -> str:
@@ -282,11 +287,19 @@ def _call_llm(llm, messages, timeout):
     text = getattr(out.get("res"), "text", None)
     if not isinstance(text, str) or not text.strip():
         raise _ReviewError("empty model reply")
-    return text
+    return text, _model_id(out.get("res"))
 
 
-def _review(url, request):
-    """the three-step agent review; returns the server's verdict dict or raises _ReviewError"""
+def _model_id(res) -> str:
+    """provider/model of a ctx.llm result when it exposes them (for the audit trail), else an empty string"""
+    try:
+        return "/".join(x for x in (getattr(res, "provider", None), getattr(res, "model", None)) if isinstance(x, str) and x)[:120]
+    except Exception:
+        return ""
+
+
+def _review(url, request, info=None):
+    """the three-step agent review; returns the server's verdict dict or raises _ReviewError. info["model"] gets the reviewing model's id."""
     global _warned_no_llm
     try:
         prompt = core.post_json(url, "/v1/review/prompt", request, HTTP_TIMEOUT)
@@ -304,7 +317,9 @@ def _review(url, request):
             _warned_no_llm = True
             logger.warning("nod-gate: NOD_REVIEW=agent needs a Hermes with plugin LLM access (ctx.llm); every gated call will ask")
         raise _ReviewError("this Hermes has no plugin LLM access")
-    text = _call_llm(llm, [{"role": "system", "content": system}, {"role": "user", "content": user}], _llm_timeout())
+    text, model = _call_llm(llm, [{"role": "system", "content": system}, {"role": "user", "content": user}], _llm_timeout())
+    if info is not None:
+        info["model"] = model
     answers = core.extract_json(text)
     if answers is None:
         raise _ReviewError("unparsable model reply")
@@ -321,36 +336,35 @@ def _review(url, request):
     return res
 
 
-def _agent_gate(base, mode, tool, text, shown, conv, t0):
+def _agent_gate(rec, mode, tool, text, conv, t0):
     """NOD_REVIEW=agent: the session's own model reviews the call. Only the human's turns (and the assistant line each replies to) and the redacted,
     clipped call go out; never tool output. Fails safe: any error is "ask"."""
-    base = {**base, "review": "agent"}
     if core.fast_safe(tool, text):
-        _log({**base, "cmd": shown, "result": "t0_safe"})
-        return None
+        return _audit(rec, text, decision="unchecked", source="read-only")
     request = {"tool": tool, "input": core.clip_input(core.redact(text)), "task": "", "cwd": core.clip(os.getcwd(), core.LIMITS["cwd"])}
     if conv:
         request["conversation"] = [{"role": m["role"], "text": core.redact(str(m.get("text") or ""))} for m in conv
                                    if isinstance(m, dict) and m.get("role") in ("user", "assistant")]
     url = os.environ.get("NOD_URL", "http://127.0.0.1:11096")
+    info = {}
     token = _reviewing.set(True)
     try:
-        res = _review(url, request)
+        res = _review(url, request, info)
     except Exception as exc:
         why = str(exc) if isinstance(exc, _ReviewError) else f"error: {type(exc).__name__}"
-        _log({**base, "cmd": shown, "result": "ask", "err": why[:120], "ms": round((time.time() - t0) * 1000)})
-        return _ask_unavailable(why[:120]) if mode == "enforce" else None
+        return _audit(rec, text, _ask_unavailable(why[:120]) if mode == "enforce" else None,
+                      review="agent", decision="ask", source="error", error=why[:120], model=info.get("model", ""), ms=_ms(t0))
     finally:
         _reviewing.reset(token)
     verdict, reason = res["decision"], str(res.get("reason") or "")[:300]
-    _log({**base, "cmd": shown, "result": verdict, "reason": reason, "ms": round((time.time() - t0) * 1000),
-          "users": sum(1 for m in conv if m.get("role") == "user"), "category": str(res.get("category") or "")[:120]})
-    if mode != "enforce" or verdict == "allow":
-        return None
-    if verdict == "block":
-        return {"action": "block", "message": f"nod: blocked ({reason or 'the review found no approval for this'}). If the user really wants this, "
-                                              "tell them exactly what would run and on which target, ask them to confirm in chat, then try again."}
-    return {"action": "approve", "message": f"nod: {reason or 'no message of the user clearly approves exactly this'}; asking you to confirm."}
+    ret = None
+    if mode == "enforce" and verdict == "block":
+        ret = {"action": "block", "message": f"nod: blocked ({reason or 'the review found no approval for this'}). If the user really wants this, "
+                                             "tell them exactly what would run and on which target, ask them to confirm in chat, then try again."}
+    elif mode == "enforce" and verdict == "ask":
+        ret = {"action": "approve", "message": f"nod: {reason or 'no message of the user clearly approves exactly this'}; asking you to confirm."}
+    return _audit(rec, text, ret, review="agent", decision=verdict, source=str(res.get("source") or "agent")[:40], model=info.get("model", ""),
+                  category=str(res.get("category") or "")[:120], reason=reason, ms=_ms(t0))
 
 
 def on_post_tool_call(tool_call_id: str = "", **_):
@@ -360,13 +374,13 @@ def on_post_tool_call(tool_call_id: str = "", **_):
     return None
 
 
-def on_pre_approval_request(command: str = "", description: str = "", session_key: str = "", **_):
-    _log({"kind": "hermes_approval_request", "sid": str(session_key)[:12], "desc": description, "cmd": core.redact(command or "")[:300]})
-    return None
-
-
 def on_post_approval_response(command: str = "", description: str = "", session_key: str = "", choice: str = "", **_):
-    _log({"kind": "hermes_approval_response", "sid": str(session_key)[:12], "desc": description, "choice": choice, "cmd": core.redact(command or "")[:300]})
+    """Hermes' own approval prompt was answered by the human: one audit line (decision ask, answer = the human's choice)"""
+    mode = _mode()
+    if mode == "off":
+        return None
+    _audit({"host": audit.HOST, "session": audit.hash_session(str(session_key or "")), "mode": mode, "tool": "terminal"}, str(command or ""),
+           decision="ask", source="hermes-approval", answer=str(choice or "")[:40], reason=str(description or "")[:300])
     return None
 
 
@@ -377,5 +391,4 @@ def register(ctx) -> None:
     ctx.register_hook("pre_tool_call", on_pre_tool_call)
     ctx.register_hook("post_tool_call", on_post_tool_call)
     ctx.register_hook("subagent_start", on_subagent_start)
-    ctx.register_hook("pre_approval_request", on_pre_approval_request)
     ctx.register_hook("post_approval_response", on_post_approval_response)

@@ -104,6 +104,13 @@ func (a *Adapter) envContent(cur, review string) string {
 	} else {
 		add("NOD_TIMEOUT", "2.5")
 	}
+	// the plugin writes its audit trail where nod reads it (nod audit verify, nod decisions)
+	if a.Env.AuditDir != "" {
+		add("NOD_AUDIT_DIR", a.Env.AuditDir)
+	}
+	if a.Env.AuditCommands != "" {
+		add("NOD_AUDIT_COMMANDS", a.Env.AuditCommands)
+	}
 	if len(lines) == 0 {
 		return rest
 	}
@@ -259,9 +266,7 @@ func (a *Adapter) Status() hosts.Status {
 	default:
 		s.Wired = true
 	}
-	if st, err := os.Stat(filepath.Join(a.Env.RuntimeDir, "hermes-shadow.jsonl")); err == nil {
-		s.LastVerdict = st.ModTime()
-	}
+	s.LastVerdict = a.Env.LastVerdict(Name)
 	return s
 }
 
