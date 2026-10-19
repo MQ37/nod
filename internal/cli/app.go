@@ -301,8 +301,8 @@ func editDistance(a, b string) int {
 }
 
 const exitCodesHelp = `Exit codes:
-  0 ok   1 usage/other error   2 check=block   3 not installed/unreachable
-  4 verification failed (checksum, hook not wired)   5 needs a decision from the human
+  0 ok   1 check=ask   2 check=block   3 not installed/unreachable
+  4 verification failed (checksum, doctor, hook not wired)   5 needs a decision from the human   64 usage error
 `
 
 func (a *App) writeUsage(w io.Writer) {

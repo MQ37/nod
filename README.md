@@ -142,7 +142,7 @@ flowchart LR
 | Claude Code | install, shadow or enforce | `PreToolUse` hook in `~/.claude/settings.json`, merged after a backup. Matcher `Bash` by default, 15 s timeout. |
 | Hermes | install | `nod-gate` plugin; enable it with `hermes plugins enable nod-gate`. |
 | Pi / Oh My Pi | install | Extension that calls the service's `/decide` endpoint. |
-| OpenCode | install, shadow or enforce | Plugin in `~/.config/opencode/plugin/`; gates `bash`. In enforce mode ask and block fail the call. Untested against a running OpenCode. |
+| OpenCode | install, shadow or enforce | Plugin in `~/.config/opencode/plugins/` (or `plugin/`); gates `bash`. In enforce mode ask and block fail the call. Untested against a running OpenCode. |
 
 ## Limits
 
