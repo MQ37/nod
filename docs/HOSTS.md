@@ -55,4 +55,4 @@ Nothing here has been run against a real opencode: the hook names, the plugin ex
 
 ## Verdicts
 
-CLI classifications and Claude hook verdicts use `decisions.jsonl` in the runtime directory, which `nod decisions` reads. Hermes writes its plugin audit to `hermes-shadow.jsonl`; Pi writes `omp-decisions.jsonl` under local share by default and those Pi records include truncated tool input. See [PRIVACY.md](PRIVACY.md).
+Every host writes its verdicts to the persistent audit trail, one file per host in `~/.local/state/nod/audit/` (`check`, `claude`, `hermes`, `opencode`, `omp`), with the command, a hash chain and `unchecked` lines for calls Nod did not judge. `nod decisions` merges them and `nod audit verify` checks the chain. See [AUDIT.md](AUDIT.md) and [PRIVACY.md](PRIVACY.md).

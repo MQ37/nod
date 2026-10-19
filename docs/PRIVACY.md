@@ -8,13 +8,13 @@ Claude transcript context contains only eligible user text and assistant context
 
 Nod itself downloads nothing and contacts no server except the one you configured. The model and llama.cpp files are fetched by you or your agent (see the `nod` skill); those downloads are ordinary HTTPS requests to Hugging Face and GitHub that expose your IP and the requested file, not tool inputs.
 
-## Verdict log
+## Audit trail
 
-`decisions.jsonl` is shared by CLI classifications and Claude hook verdicts. It stores timestamps, host/tool identifiers, decision, source, rule labels and elapsed time as available; it does not store command text or conversation text. File mode is 0600; the runtime directory is mode 0700. The runtime location is `$XDG_RUNTIME_DIR/nod/decisions.jsonl`, or the OS temporary directory under `nod-UID/` when `XDG_RUNTIME_DIR` is unset. Rotation keeps one `.1` file. The fallback may be disk-backed.
+Nod keeps a persistent audit trail of every action it sees: one JSONL file per host in `$XDG_STATE_HOME/nod/audit/` (default `~/.local/state/nod/audit/`), directory mode 0700, files 0600. See [AUDIT.md](AUDIT.md) for the fields, the hash chain and `nod audit verify`.
 
-Hermes' embedded plugin writes a separate `hermes-shadow.jsonl` audit log under the runtime nod directory. Pi's embedded extension writes `~/.local/share/nod/omp-decisions.jsonl` by default (override with `DECIDER_LOG`, or set it to `off`); each Pi record includes up to 4,000 characters of tool input. These host-side logs are not read by `nod decisions`; protect and remove them according to the host's retention needs.
+**It stores commands.** Each line holds the tool, the command (redacted and clipped to 4,000 characters), the sha256 of the original command, the decision and its reason, a hashed session id, the working directory and timing. Redaction removes private keys, `Authorization` and `Bearer` values, well-known token prefixes and values of `*KEY`/`*TOKEN`/`*SECRET`/`*PASSWORD` variables, but it is a safety net and not a guarantee: treat the directory as sensitive. `nod config set audit_commands preview|hash` stores less (160 characters, or only the hash). **Conversation text is never stored.** Calls a host plugin sees but does not judge are recorded as `unchecked`.
 
-`nod decisions --verbose` does not recover or display command text: command text is never written to this shared log. Hook diagnostics go to stderr and should not include conversation content.
+`nod decisions` reads all hosts' files (and the legacy RAM-only `decisions.jsonl` from older versions); `nod decisions -v` shows the stored command. Delete the directory to delete the trail; Nod recreates it on the next call.
 
 ## Limits
 

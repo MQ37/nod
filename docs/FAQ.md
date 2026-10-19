@@ -12,7 +12,7 @@
 
 **What happens when the server is unreachable?** The default `on_unreachable=ask` asks. `block` and `allow` are configurable alternatives.
 
-**How do I inspect decisions?** `nod decisions -n 20` or `nod decisions --follow`. The shared runtime file is `decisions.jsonl`; command and conversation text are not stored.
+**How do I inspect decisions?** `nod decisions -n 20 -v` or `nod decisions --follow`: every host's verdicts, with the command under `-v`. The persistent files are in `~/.local/state/nod/audit/`; `nod audit verify` checks that nothing in the middle was altered. Conversation text is not stored. See [AUDIT.md](AUDIT.md).
 
 **Which hosts are supported?** Claude Code, Hermes, and Pi adapters are available with host-specific behavior. opencode gets an embedded plugin (bash calls only; ask is a failed call with an approval hint, not a prompt). See `docs/HOSTS.md`.
 

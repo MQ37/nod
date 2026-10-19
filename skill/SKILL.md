@@ -145,7 +145,7 @@ This writes the config, a tiny local service (`nod serve --model agent`, it only
 1. `nod doctor --json`: every check `ok`. A failing doctor exits 4.
 2. `nod status --json`: `installed`, `active`, `model_status`, `power`, and for a remote setup `local_model` (`paused: ...` explains why a local backup is not loaded).
 3. `nod check --json -- ls`: a quick probe. Verdicts depend on the model; do not promise a specific result for arbitrary input.
-4. Start a fresh host session after installing hooks, then review `nod decisions -n 20` (verdict metadata only).
+4. Start a fresh host session after installing hooks, then review `nod decisions -n 20 -v`: every action Nod saw, per host, with the (redacted) command. It is a persistent audit trail in `~/.local/state/nod/audit/`; `nod audit verify` checks its hash chain, and `docs/AUDIT.md` explains the fields. Tell the operator the trail contains commands (redacted), so the directory is sensitive.
 
 ## 6. Roll back
 

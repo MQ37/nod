@@ -21,7 +21,7 @@
 
 Nod is an **auto mode** (an auto-approve layer that lets routine calls through) with an **auto review** (a reviewer model that checks each risky call) for agent hosts such as Claude Code, Hermes, Pi and OpenCode. A local [Decider](#credits) model judges every call in context, **including what you told the agent**, not just the command. There is no allow list in the default path. When the model isn't ready, Nod answers **ask**, never allow.
 
-**Docs:** [Install](INSTALL.md) · [How it works](docs/HOW_IT_WORKS.md) · [Agent review](docs/AGENT_REVIEW.md) · [Model tiers](docs/MODEL_TIERS.md) · [Models and llama.cpp](docs/MODELS_AND_LIBS.md) · [GPU](docs/GPU.md) · [Hosts](docs/HOSTS.md) · [Config](docs/CONFIG.md) · [Privacy](docs/PRIVACY.md) · [CLI JSON](docs/CLI_OUTPUTS.md) · [Exit codes](docs/EXIT_CODES.md) · [FAQ](docs/FAQ.md)
+**Docs:** [Install](INSTALL.md) · [How it works](docs/HOW_IT_WORKS.md) · [Agent review](docs/AGENT_REVIEW.md) · [Audit trail](docs/AUDIT.md) · [Model tiers](docs/MODEL_TIERS.md) · [Models and llama.cpp](docs/MODELS_AND_LIBS.md) · [GPU](docs/GPU.md) · [Hosts](docs/HOSTS.md) · [Config](docs/CONFIG.md) · [Privacy](docs/PRIVACY.md) · [CLI JSON](docs/CLI_OUTPUTS.md) · [Exit codes](docs/EXIT_CODES.md) · [FAQ](docs/FAQ.md)
 
 ## Three answers
 
@@ -70,6 +70,7 @@ Captured against a server running the `lite` model on a GPU: about 2 s for the l
 ## Why
 
 - **One judge, no allow list.** The model judges the whole call in context, where pattern lists have gaps. About 2 s per call on `lite`; an optional `hybrid` engine adds rules in front.
+- **Everything is auditable.** Every action Nod sees goes into a persistent, hash-chained audit trail with the command and the decision; `nod audit verify` shows if anything in the middle was altered. See [Audit trail](#audit-trail).
 - **It reads the conversation.** Approved by you: allow. Forbidden by you: block. See [below](#it-reads-the-conversation).
 - **Local by default.** The Decider runs on your machine through llama.cpp, and tool calls go to `127.0.0.1` unless you point Nod at your own server. With `--model agent` the review goes to the model your agent already uses instead ([privacy](docs/PRIVACY.md)).
 - **Fails safe.** A cold, slow or broken model never turns into an allow: the answer is ask.
@@ -90,6 +91,17 @@ nod install --model fast --model-path ~/.local/share/nod/models/fast/decider-4b-
 ```
 
 It prints every file and config diff and asks before changing anything. It runs as your user (systemd `--user` or launchd, no root) and starts in shadow mode. When the verdicts in `nod decisions` look right: `nod config set mode enforce`. To remove what Nod wrote: `nod uninstall --yes`. `go install` puts `nod` in `$(go env GOPATH)/bin` (usually `~/go/bin`); make sure that is on your `PATH`. Building from source, agent-driven and remote installs: [INSTALL.md](INSTALL.md), [docs/FAQ.md](docs/FAQ.md).
+
+## Audit trail
+
+Every action is recorded, across reboots, one file per host in `~/.local/state/nod/audit/`: time, host, tool, the command (redacted), its sha256, the decision and why, and the session. Each line carries the hash of the line before it.
+
+```sh
+nod decisions -n 20 -v     # recent verdicts from every host, with commands
+nod audit verify           # exits 4 if a line was changed, removed or reordered
+```
+
+Calls a host plugin sees but Nod does not judge are recorded as `unchecked`. The trail holds commands (secrets redacted), so keep the directory private; `audit_commands` stores less. Fields, limits and what the chain does not prove: [docs/AUDIT.md](docs/AUDIT.md).
 
 ## Model tiers
 

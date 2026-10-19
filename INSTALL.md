@@ -41,7 +41,8 @@ For a client-only machine using an existing server, use `nod connect http://192.
 ```sh
 nod doctor --json
 nod status --json
-nod decisions -n 20
+nod decisions -n 20 -v
+nod audit verify
 nod config set mode enforce
 nod hooks remove --host claude --yes
 nod uninstall --yes
