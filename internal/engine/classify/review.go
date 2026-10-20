@@ -7,6 +7,8 @@ import (
 
 	"github.com/MQ37/nod/internal/api"
 	"github.com/MQ37/nod/internal/decider"
+	"github.com/MQ37/nod/internal/engine/conversation"
+	"github.com/MQ37/nod/internal/engine/pipeline"
 	"github.com/MQ37/nod/internal/engine/prompt"
 )
 
@@ -96,7 +98,13 @@ func (c Classifier) ReviewVerdict(req api.ClassifyRequest, answers map[string]an
 		return api.ClassifyResponse{}, fmt.Errorf("answers could not be decoded")
 	}
 	resp := api.ClassifyResponse{Decision: api.Ask, Tier: "?"}
-	return finish(resp, req, 0, nil, "?", pa, category, "agent"), nil
+	out := finish(resp, req, 0, nil, "?", pa, category, "agent")
+	// The matrix still asks. A host with no approval prompt gets the flag so it can run its own
+	// two-step confirmation (block first, run on the same call after the user answers).
+	if req.NoPrompt && out.Decision == api.Ask && pipeline.UserApproved(pa, conv, conversation.LastUserConditional(req.Conversation)) {
+		out.UserApproved = true
+	}
+	return out, nil
 }
 
 func categoryFrom(v any) (string, error) {

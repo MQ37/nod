@@ -769,3 +769,47 @@ test("audit: the committed Go interop fixture is what the plugin code writes", a
   assert.deepEqual(verifyChain(path.join(dir, "opencode.jsonl")), { lines: 12, brk: null, truncated: false })
   fs.rmSync(dir, { recursive: true, force: true })
 })
+
+test("v2: a user-approved ask is blocked first and runs only after the user speaks again", async () => {
+  const msgs = [{ id: "m1", type: "user", text: "try running rm /tmp/x", time: {}, files: [], agents: [] }]
+  const routes = { "/v1/classify": jsonRes({ decision: "ask", reason: "r", source: "model", user_approved: true }) }
+  const { nod, fetch } = setupNodV2({ routes, ctxOpts: { msgs } })
+  await assert.rejects(nod.onToolBefore(shellEvent("rm /tmp/x")), /explicit approval/)
+  // same message, retried at once: still blocked
+  await assert.rejects(nod.onToolBefore(shellEvent("rm /tmp/x")), /explicit approval/)
+  // the user answers; a different command is not covered
+  msgs.push({ id: "m2", type: "user", text: "yes, delete it", time: {}, files: [], agents: [] })
+  await assert.rejects(nod.onToolBefore(shellEvent("rm /tmp/y")), /explicit approval/)
+  await nod.onToolBefore(shellEvent("rm /tmp/x"))
+  // the confirmation is single use
+  msgs.push({ id: "m3", type: "user", text: "ok thanks", time: {}, files: [], agents: [] })
+  await assert.rejects(nod.onToolBefore(shellEvent("rm /tmp/x")), /explicit approval/)
+  assert.ok(fetch.calls.length >= 5)
+})
+
+test("v2: an ask without user_approved is never confirmed by a later message", async () => {
+  const msgs = [{ id: "m1", type: "user", text: "a", time: {}, files: [], agents: [] }]
+  const routes = { "/v1/classify": jsonRes({ decision: "ask", reason: "r", source: "model" }) }
+  const { nod } = setupNodV2({ routes, ctxOpts: { msgs } })
+  await assert.rejects(nod.onToolBefore(shellEvent("rm /tmp/x")), /explicit approval/)
+  msgs.push({ id: "m2", type: "user", text: "yes", time: {}, files: [], agents: [] })
+  await assert.rejects(nod.onToolBefore(shellEvent("rm /tmp/x")), /explicit approval/)
+})
+
+test("v2: a bare confirm is sent with the assistant's proposal, a long message is not", async () => {
+  const mk = (reply) => [
+    { id: "m1", type: "user", text: "push and deploy", time: {}, files: [], agents: [] },
+    { id: "m2", type: "assistant", content: [{ type: "reasoning", text: "" }, { type: "text", text: "Confirm: SSH to prod and restart the service?" }], time: {} },
+    { id: "m3", type: "idle", outcome: "succeeded", time: {} },
+    { id: "m4", type: "user", text: reply, time: {}, files: [], agents: [] },
+    { id: "m5", type: "assistant", content: [{ type: "tool", name: "shell" }], time: {} },
+  ]
+  const routes = { "/v1/classify": jsonRes({ decision: "allow", source: "model" }) }
+  const a = setupNodV2({ routes, ctxOpts: { msgs: mk("confirm") } })
+  await a.nod.onToolBefore(shellEvent("ssh prod uptime"))
+  assert.deepEqual(a.fetch.calls[0].body.conversation.map((t) => t.role), ["user", "assistant", "user"])
+  assert.match(a.fetch.calls[0].body.conversation[1].text, /SSH to prod/)
+  const b = setupNodV2({ routes, ctxOpts: { msgs: mk("yes, ssh to prod and restart the service") } })
+  await b.nod.onToolBefore(shellEvent("ssh prod uptime"))
+  assert.deepEqual(b.fetch.calls[0].body.conversation.map((t) => t.role), ["user", "user"])
+})

@@ -37,6 +37,9 @@ type ClassifyRequest struct {
 	Task         string `json:"task,omitempty"`
 	Cwd          string `json:"cwd,omitempty"`
 	Conversation []Turn `json:"conversation,omitempty"`
+	// NoPrompt marks a host that cannot show an approval prompt (an "ask" there only fails the call).
+	// The response then carries user_approved when the review found the user's approval of this exact action.
+	NoPrompt bool `json:"no_prompt,omitempty"`
 }
 
 // ClassifyResponse is the answer of POST /v1/classify (fields omitted when the model did not run).
@@ -55,7 +58,10 @@ type ClassifyResponse struct {
 	PMatch   *float64 `json:"p_match,omitempty"`
 	PNamed   *float64 `json:"p_named,omitempty"`
 	Category string   `json:"category,omitempty"`
-	Ms       int      `json:"ms"`
+	// UserApproved is set only for a NoPrompt request whose decision is ask because of the action's
+	// severity, while the user had approved it in plain words. The decision itself stays ask.
+	UserApproved bool `json:"user_approved,omitempty"`
+	Ms           int  `json:"ms"`
 	// Via names the server that answered when a fallback chain is in use: remote or local.
 	Via   string `json:"via,omitempty"`
 	Error string `json:"error,omitempty"`

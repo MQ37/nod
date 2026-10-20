@@ -60,6 +60,13 @@ func approved(a Answers, bare bool, th Thresholds) bool {
 	return a.Forbid < th.Forbid && consent >= th.Approve
 }
 
+// UserApproved reports whether the answers show the user explicitly approved this exact action in
+// plain words (not conditionally, not forbidden). Hosts without an approval prompt use it to let
+// an action through that the matrix would only "ask" about.
+func UserApproved(a Answers, hasConversation, conditional bool) bool {
+	return hasConversation && !conditional && approved(a, false, DefaultThresholds)
+}
+
 func isT1(why []string) bool {
 	for _, r := range why {
 		for _, p := range t1Prefixes {

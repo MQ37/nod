@@ -98,3 +98,33 @@ func TestReviewVerdictRejectsBadAnswersSoTheCallerAsks(t *testing.T) {
 		}
 	}
 }
+
+func TestReviewVerdictNoPromptHostFlagsApprovalButStillAsks(t *testing.T) {
+	force := catNumber(t, "force-pushing")
+	yes, no := "yes", "no"
+	conv := []api.Turn{{Role: "user", Text: "yes, delete it"}}
+	req := api.ClassifyRequest{Tool: "Bash", Input: "rm /tmp/x", Conversation: conv, NoPrompt: true}
+	cases := []struct {
+		name         string
+		req          api.ClassifyRequest
+		answers      map[string]any
+		want         api.Decision
+		userApproved bool
+	}{
+		{"approved destructive call still asks, flagged", req, map[string]any{"category": force, "auth": yes, "forbid": no, "match": yes, "named": yes}, api.Ask, true},
+		{"no consent stays blocked", req, map[string]any{"category": force, "auth": no, "forbid": no, "match": no, "named": no}, api.Block, false},
+		{"forbidden stays blocked", req, map[string]any{"category": force, "auth": yes, "forbid": yes, "match": yes, "named": yes}, api.Block, false},
+		{"host with a prompt gets no flag", api.ClassifyRequest{Tool: "Bash", Input: "rm /tmp/x", Conversation: conv}, map[string]any{"category": force, "auth": yes, "forbid": no, "match": yes, "named": yes}, api.Ask, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := Classifier{}.ReviewVerdict(c.req, c.answers)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Decision != c.want || got.UserApproved != c.userApproved {
+				t.Fatalf("%+v want %s approved=%v", got, c.want, c.userApproved)
+			}
+		})
+	}
+}

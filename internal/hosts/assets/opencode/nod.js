@@ -130,8 +130,26 @@ export function userTurns(messages) {
   return out.slice(-MAX_TURNS)
 }
 
-// ClassifyRequest for nod. turns are the human's own message texts, oldest first.
-export function buildRequest({ tool, input, cwd, turns }) {
+// A bare "yes" or "confirm" only means something next to what it answers. Same word lists and
+// limits as the server's conversation.IsShortReply.
+const SHORT_WORDS = new Set("yes y yep yeah yup ya yea ok okay k kk sure fine alright right correct please pls plz go ahead do it that this and now just then proceed approved approve confirm confirmed lgtm sgtm sounds good great perfect thanks thank you ty absolutely definitely of course for cool lets let's run thing".split(" "))
+const CORE_WORDS = new Set("yes y yep yeah yup ya yea ok okay k kk sure go proceed approved approve confirm confirmed lgtm sgtm do run".split(" "))
+
+export function isShortReply(text) {
+  const w = String(text || "").toLowerCase().replace(/\u2019/g, "'").match(/[a-z0-9']+/g) || []
+  if (w.length === 0 || w.length > 6) return false
+  let core = false
+  for (const x of w) {
+    if (!SHORT_WORDS.has(x)) return false
+    core = core || CORE_WORDS.has(x)
+  }
+  return core
+}
+
+// ClassifyRequest for nod. turns are the human's own message texts, oldest first. proposal is the
+// assistant's message right before a short last user reply; the server treats it as the thing
+// being approved, and only ever as that.
+export function buildRequest({ tool, input, cwd, turns, proposal }) {
   const req = { tool, input: clip(redact(input), MAX_INPUT), cwd: typeof cwd === "string" ? cwd : "" }
   const conv = (Array.isArray(turns) ? turns : [])
     .filter((t) => typeof t === "string" && t.trim())
@@ -139,6 +157,9 @@ export function buildRequest({ tool, input, cwd, turns }) {
     .map((t) => ({ role: "user", text: clip(redact(t.trim()), MAX_TURN) }))
   if (conv.length) {
     req.task = conv[conv.length - 1].text
+    if (typeof proposal === "string" && proposal.trim() && isShortReply(conv[conv.length - 1].text)) {
+      conv.splice(conv.length - 1, 0, { role: "assistant", text: clip(redact(proposal.trim()), MAX_TURN) })
+    }
     req.conversation = conv
   }
   return req
@@ -339,6 +360,7 @@ export function formatAuditLine(e, prev) {
   o.model = str(e.model)
   const rules = Array.isArray(e.rules) ? e.rules.filter((r) => typeof r === "string") : []
   if (rules.length) o.rules = rules
+  o.answer = str(e.answer)
   o.category = typeof e.category === "number" && Number.isFinite(e.category) ? String(e.category) : str(e.category)
   const ms = Number.isFinite(e.ms) ? Math.round(e.ms) : 0
   if (ms > 0) o.ms = ms
@@ -560,6 +582,7 @@ export function createAuditor({ config, writer, now = () => new Date() }) {
           model: v.model,
           category: v.category,
           rules: v.rules,
+          answer: v.answer,
           ms: v.ms,
           error: v.error,
           cwd,
@@ -586,11 +609,47 @@ export function createAuditor({ config, writer, now = () => new Date() }) {
 }
 
 // Extra verdict fields of a nod response for the audit line.
+// The review's yes/no readout, for the audit: probabilities from 0 to 1 (1 = yes).
+function answerText(r) {
+  const parts = []
+  for (const [k, f] of [["auth", "p_auth"], ["forbid", "p_forbid"], ["match", "p_match"], ["named", "p_named"], ["block", "p_block"]]) {
+    if (typeof r[f] === "number" && Number.isFinite(r[f])) parts.push(`${k}=${Math.round(r[f] * 100) / 100}`)
+  }
+  return parts.join(" ")
+}
+
 function verdictExtras(resp) {
   const r = resp && typeof resp === "object" ? resp : {}
   return {
     category: typeof r.category === "string" || typeof r.category === "number" ? String(r.category) : "",
     rules: Array.isArray(r.rules) ? r.rules.filter((x) => typeof x === "string") : [],
+    userApproved: r.user_approved === true,
+    answer: answerText(r),
+  }
+}
+
+// A plugin cannot open an approval prompt, so a destructive call the user already approved is
+// confirmed in two steps: the first attempt is blocked and remembered, and the same call runs only
+// after the user has sent another message. A signature of the user turns tells the two apart.
+export function turnsSignature(turns) {
+  const t = Array.isArray(turns) ? turns : []
+  return `${t.length}|${t.length ? t[t.length - 1] : ""}`
+}
+
+export function createConfirmGate() {
+  const pending = new Map()
+  return {
+    // true when this call may run: it was blocked before and the user has spoken since.
+    confirmed(sid, command, sig) {
+      const key = `${sid}\u0000${command}`
+      const prev = pending.get(key)
+      if (prev !== undefined && prev !== sig) {
+        pending.delete(key)
+        return true
+      }
+      pending.set(key, sig)
+      return false
+    },
   }
 }
 
@@ -609,6 +668,7 @@ export function createNod(deps) {
   const clock = deps.clock || Date.now
   const audit = createAuditor({ config: cfg, writer: deps.audit === undefined ? defaultAuditWriter(cfg) : deps.audit, now })
   const gated = new Set(cfg.tools)
+  const confirm = createConfirmGate()
   const children = new Set() // review sessions we created: never reviewed, never cached
   const models = new Map() // sessionID -> {providerID, modelID}
   const turns = new Map() // sessionID -> user texts, oldest first
@@ -732,7 +792,7 @@ export function createNod(deps) {
     }
     const answers = extractJson(text)
     if (!answers) throw new Error("the review reply had no JSON object")
-    return await post("/v1/review/verdict", { request: req, answers }, signal)
+    return await post("/v1/review/verdict", { request: { ...req, no_prompt: true }, answers }, signal)
   }
 
   // review returns {decision, reason, source, model, category, rules, ms, error}; every failure is ask.
@@ -742,13 +802,15 @@ export function createNod(deps) {
     const t0 = clock()
     const run = async () => {
       const root = await rootOf(sid, ctl.signal)
-      const req = buildRequest({ tool: toolName, input, cwd, turns: await turnsFor(root, ctl.signal) })
+      const turnList = await turnsFor(root, ctl.signal)
+      meta.sig = turnsSignature(turnList)
+      const req = buildRequest({ tool: toolName, input, cwd, turns: turnList })
       const resp = cfg.review === "agent" ? await agentReview(sid, root, req, ctl.signal, meta) : await post("/v1/classify", req, ctl.signal)
       return { ...mapDecision(resp), ...verdictExtras(resp) }
     }
     try {
       const v = await withTimeout(run(), cfg.timeout_ms, () => ctl.abort())
-      return { ...v, model: meta.model, ms: clock() - t0 }
+      return { ...v, model: meta.model, sig: meta.sig, ms: clock() - t0 }
     } catch (err) {
       return { decision: "ask", reason: `nod could not review this call: ${short(err)}`, source: "error", error: short(err), model: meta.model, ms: clock() - t0 }
     }
@@ -779,6 +841,10 @@ export function createNod(deps) {
       const spec = TOOL_MAP[tool]
       const command = spec.input(args)
       const v = await review(sid, spec.name, command, cwd)
+      if (cfg.mode === "enforce" && v.decision === "ask" && v.userApproved && confirm.confirmed(sid, command, v.sig)) {
+        v.decision = "allow"
+        v.reason = "the user confirmed this exact action after it was blocked once"
+      }
       await audit.verdict({ sid, tool: spec.name, command, cwd, v })
       if (cfg.mode !== "enforce") return
       const err = enforceError(v.decision, v.reason)
@@ -808,6 +874,39 @@ export function userTurnsV2(messages) {
   return out.slice(-MAX_TURNS)
 }
 
+// The assistant's text right before the last user message, or "". v2 assistant messages carry
+// content blocks ({type:"text", text}); idle, tool and reasoning entries are skipped, and the search
+// stops at the previous user message. Messages after the last user message (the turn in progress)
+// are ignored.
+export function proposalV2(messages) {
+  if (!Array.isArray(messages)) return ""
+  let last = -1
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i] && messages[i].type === "user") {
+      last = i
+      break
+    }
+  }
+  for (let i = last - 1; i >= 0; i--) {
+    const m = messages[i]
+    if (!m || m.type === "user") return ""
+    if (m.type !== "assistant") continue
+    const text = assistantTextV2(m)
+    if (text) return text
+  }
+  return ""
+}
+
+function assistantTextV2(m) {
+  if (typeof m.text === "string" && m.text.trim()) return m.text.trim()
+  if (!Array.isArray(m.content)) return ""
+  return m.content
+    .filter((c) => c && c.type === "text" && typeof c.text === "string")
+    .map((c) => c.text)
+    .join("\n")
+    .trim()
+}
+
 export function createNodV2(deps) {
   const ctx = deps.ctx
   const cfg = deps.config || loadConfig({}, {})
@@ -816,6 +915,7 @@ export function createNodV2(deps) {
   const clock = deps.clock || Date.now
   const audit = createAuditor({ config: cfg, writer: deps.audit === undefined ? defaultAuditWriter(cfg) : deps.audit, now })
   const gated = new Set(cfg.tools)
+  const confirm = createConfirmGate()
 
   async function post(p, body, signal) {
     const res = await doFetch(cfg.url + p, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal })
@@ -828,7 +928,7 @@ export function createNodV2(deps) {
 
   async function sessionContext(sid) {
     const [info, msgs] = await Promise.all([ctx.session.get({ sessionID: sid }), ctx.session.context({ sessionID: sid })])
-    return { model: info && info.model, turns: userTurnsV2(msgs) }
+    return { model: info && info.model, turns: userTurnsV2(msgs), proposal: proposalV2(msgs) }
   }
 
   async function agentReview(req, model, signal, meta) {
@@ -839,7 +939,7 @@ export function createNodV2(deps) {
     const out = await ctx.generate.text({ model: { providerID: model.providerID, id: model.id }, prompt: p.system + "\n\n" + p.user })
     const answers = extractJson(out && typeof out.text === "string" ? out.text : "")
     if (!answers) throw new Error("the review reply had no JSON object")
-    return await post("/v1/review/verdict", { request: req, answers }, signal)
+    return await post("/v1/review/verdict", { request: { ...req, no_prompt: true }, answers }, signal)
   }
 
   // {decision, reason, source, model, category, rules, ms, error}; every failure is ask.
@@ -848,14 +948,15 @@ export function createNodV2(deps) {
     const meta = {}
     const t0 = clock()
     const run = async () => {
-      const { model, turns } = await sessionContext(sid)
-      const req = buildRequest({ tool: toolName, input, cwd, turns })
+      const { model, turns, proposal } = await sessionContext(sid)
+      meta.sig = turnsSignature(turns)
+      const req = buildRequest({ tool: toolName, input, cwd, turns, proposal })
       const resp = cfg.review === "agent" ? await agentReview(req, model, ctl.signal, meta) : await post("/v1/classify", req, ctl.signal)
       return { ...mapDecision(resp), ...verdictExtras(resp) }
     }
     try {
       const v = await withTimeout(run(), cfg.timeout_ms, () => ctl.abort())
-      return { ...v, model: meta.model, ms: clock() - t0 }
+      return { ...v, model: meta.model, sig: meta.sig, ms: clock() - t0 }
     } catch (err) {
       return { decision: "ask", reason: `nod could not review this call: ${short(err)}`, source: "error", error: short(err), model: meta.model, ms: clock() - t0 }
     }
@@ -873,6 +974,10 @@ export function createNodV2(deps) {
     const spec = TOOL_MAP[tool]
     const command = spec.input(args)
     const v = await review(sid, spec.name, command, cwd)
+    if (cfg.mode === "enforce" && v.decision === "ask" && v.userApproved && confirm.confirmed(sid, command, v.sig)) {
+      v.decision = "allow"
+      v.reason = "the user confirmed this exact action after it was blocked once"
+    }
     await audit.verdict({ sid, tool: spec.name, command, cwd, v })
     if (cfg.mode !== "enforce") return
     const err = enforceError(v.decision, v.reason)
