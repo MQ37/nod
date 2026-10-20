@@ -30,7 +30,7 @@ func defaultAuditDir(getenv func(string) string, home string) string {
 }
 
 // Verdict is one hook verdict. Command is the original command text: it is redacted and clipped before
-// anything is written (see decisionlog.CommandFields). No conversation text is ever stored.
+// anything is written (see decisionlog.CommandFields). Context holds the user's own previous messages (never assistant or tool text), stored only when Env.AuditContext > 0.
 type Verdict struct {
 	Time     time.Time `json:"time"`
 	Host     string    `json:"host"`
@@ -48,6 +48,7 @@ type Verdict struct {
 	Category string    `json:"-"`
 	Reason   string    `json:"-"`
 	Cwd      string    `json:"-"`
+	Context  []string  `json:"-"` // the user's previous messages, oldest first; redacted and clipped before writing
 }
 
 // AuditFile is the audit log of one host: <audit dir>/<host>.jsonl.
@@ -66,7 +67,28 @@ func (e Env) LogVerdict(v Verdict) {
 	sha, text := decisionlog.CommandFields(v.Command, e.AuditCommands)
 	entry := decisionlog.Entry{Time: ts, Host: v.Host, Session: decisionlog.HashSession(v.Session), Mode: v.Mode, Review: v.Review, Tool: v.Tool,
 		Command: text, CommandSHA256: sha, Decision: v.Decision, Source: v.Source, Rules: v.Rules, Category: v.Category, Ms: v.Ms, Error: v.Error, Cwd: v.Cwd, Reason: v.Reason}
+	if e.AuditCommands != decisionlog.CommandsHash {
+		entry.Context = decisionlog.ContextFields(v.Context, e.AuditContext)
+	}
 	_ = decisionlog.New(e.AuditFile(v.Host), false).Append(entry)
+}
+
+// AppendEvent appends one raw observer event line to the events file (mode 0600, directory 0700). It is
+// best-effort: observing never changes what a hook answers. The line is written with a single write call.
+func (e Env) AppendEvent(line []byte) {
+	defer func() { _ = recover() }()
+	if e.EventsFile == "" || len(line) == 0 {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(e.EventsFile), 0o700); err != nil {
+		return
+	}
+	f, err := os.OpenFile(e.EventsFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	_, _ = f.Write(append(line, '\n'))
 }
 
 // LastVerdict returns the timestamp of the newest audit line for host.

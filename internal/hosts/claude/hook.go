@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/MQ37/nod/internal/api"
+	"github.com/MQ37/nod/internal/decisionlog"
 	"github.com/MQ37/nod/internal/hosts"
 	"github.com/MQ37/nod/internal/transcript"
 )
@@ -122,6 +123,9 @@ func (a *Adapter) Hook(stdin io.Reader, stdout io.Writer, cl api.Classifier) (co
 	}
 	req := api.ClassifyRequest{Tool: ev.ToolName, Input: ToolText(ev.ToolName, ev.ToolInput), Cwd: ev.Cwd}
 	rec.Command, rec.Session, rec.Cwd = req.Input, ev.SessionID, ev.Cwd
+	if ev.TranscriptPath != "" && env.AuditContext > 0 {
+		rec.Context = transcript.UserTexts(ev.TranscriptPath, env.AuditContext)
+	}
 	if ev.TranscriptPath != "" {
 		req.Task = transcript.LastUserTask(ev.TranscriptPath)
 		if conv, err := transcript.Parse(ev.TranscriptPath); err == nil {
@@ -181,17 +185,56 @@ func pyFloat(f *float64) string {
 	return strconv.FormatFloat(*f, 'g', -1, 64)
 }
 
-// Observe records an observer event (any hook event) as one verdict-log-like line without any command text.
-// It classifies nothing and answers nothing.
+// Observe records one hook event (any event) as a raw line in the events file, in the format of the old
+// `toolguard log`: {ts, event, session_id, tool_use_id, tool_name, permission_mode, raw}. Every string in
+// the event is redacted first (private keys, Authorization/Bearer values, token prefixes, *KEY/*TOKEN/*SECRET
+// values). It classifies nothing and answers nothing.
 func (a *Adapter) Observe(stdin io.Reader) int {
 	defer func() { _ = recover() }()
 	raw, _ := io.ReadAll(io.LimitReader(stdin, maxEvent))
-	var ev event
-	if json.Unmarshal(raw, &ev) != nil {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var ev map[string]any
+	if dec.Decode(&ev) != nil || ev == nil {
 		return 0
 	}
-	a.Env.LogVerdict(hosts.Verdict{Host: Name + "-observe", Tool: ev.ToolName, Mode: strings.ToLower(ev.HookEventName), Answer: ev.PermissionMode})
+	now := a.Env.Now()
+	line := map[string]any{
+		"ts":              float64(now.UnixNano()) / 1e9,
+		"event":           ev["hook_event_name"],
+		"session_id":      ev["session_id"],
+		"tool_use_id":     ev["tool_use_id"],
+		"tool_name":       ev["tool_name"],
+		"permission_mode": ev["permission_mode"],
+		"raw":             redactTree(ev),
+	}
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if enc.Encode(line) != nil {
+		return 0
+	}
+	a.Env.AppendEvent(bytes.TrimRight(buf.Bytes(), "\n"))
 	return 0
+}
+
+// redactTree redacts every string value (and key-free structure is kept) of a decoded JSON value.
+func redactTree(v any) any {
+	switch x := v.(type) {
+	case string:
+		return decisionlog.Redact(x)
+	case []any:
+		for i := range x {
+			x[i] = redactTree(x[i])
+		}
+		return x
+	case map[string]any:
+		for k := range x {
+			x[k] = redactTree(x[k])
+		}
+		return x
+	}
+	return v
 }
 
 // ---- tool_input flattening (port of tool_text) ----

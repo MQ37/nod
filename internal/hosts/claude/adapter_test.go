@@ -2,6 +2,7 @@ package claude
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/MQ37/nod/internal/api"
+	"github.com/MQ37/nod/internal/decisionlog"
 	"github.com/MQ37/nod/internal/hosts"
 )
 
@@ -137,4 +139,89 @@ func mustRead(t *testing.T, p string) []byte {
 		t.Fatal(e)
 	}
 	return b
+}
+
+type allowClassifier struct{}
+
+func (allowClassifier) Classify(api.ClassifyRequest) (api.ClassifyResponse, error) {
+	return api.ClassifyResponse{Decision: api.Allow, Source: "model"}, nil
+}
+
+func TestHookStoresPreviousUserMessagesInTheAudit(t *testing.T) {
+	var lines []string
+	for i := 0; i < 12; i++ {
+		lines = append(lines, `{"type":"assistant","message":{"content":"reply"}}`, `{"type":"user","message":{"content":"question `+string(rune('a'+i))+` token sk-abcdefghijklmnopqrstuv"}}`)
+	}
+	dir := t.TempDir()
+	tr := filepath.Join(dir, "t.jsonl")
+	if err := os.WriteFile(tr, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	audit := filepath.Join(dir, "audit")
+	for _, tc := range []struct {
+		n, want int
+		cmds    string
+	}{{10, 10, "full"}, {3, 3, "full"}, {0, 0, "full"}, {10, 0, "hash"}} {
+		env := hosts.Env{Home: dir, AuditDir: audit, AuditContext: tc.n, AuditCommands: tc.cmds, Getenv: func(string) string { return "" }, Now: time.Now, Stderr: &bytes.Buffer{}}
+		_ = os.RemoveAll(audit)
+		a := New(env)
+		a.Hook(strings.NewReader(`{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"ls"},"transcript_path":"`+tr+`","session_id":"s1"}`), &bytes.Buffer{}, allowClassifier{})
+		es, err := decisionlog.ReadLast(env.AuditFile("claude"), 1)
+		if err != nil || len(es) != 1 {
+			t.Fatalf("n=%d: no audit line: %v", tc.n, err)
+		}
+		c := es[0].Context
+		if len(c) != tc.want {
+			t.Fatalf("n=%d cmds=%s: %d messages, want %d", tc.n, tc.cmds, len(c), tc.want)
+		}
+		if tc.want == 10 && (!strings.HasPrefix(c[9], "question l ") || !strings.HasPrefix(c[0], "question c ")) {
+			t.Fatalf("wrong window: first=%q last=%q", c[0], c[9])
+		}
+		for _, m := range c {
+			if strings.Contains(m, "sk-abc") || strings.Contains(m, "reply") {
+				t.Fatalf("secret or assistant text stored: %q", m)
+			}
+		}
+	}
+}
+
+func TestObserveAppendsRawRedactedEventsInTheOldFormat(t *testing.T) {
+	dir := t.TempDir()
+	events := filepath.Join(dir, "data", "events.jsonl")
+	env := hosts.Env{Home: dir, EventsFile: events, Getenv: func(string) string { return "" }, Now: func() time.Time { return time.Unix(1791719415, 500_000_000) }, Stderr: &bytes.Buffer{}}
+	a := New(env)
+	a.Observe(strings.NewReader(`{"hook_event_name":"PostToolUse","session_id":"s1","tool_use_id":"t1","tool_name":"Read","permission_mode":"auto","tool_input":{"file_path":"/x"},"tool_response":{"stdout":"key=sk-abcdefghijklmnopqrstuv and API_TOKEN=hunter2","n":12345678901234567890},"duration_ms":7}`))
+	a.Observe(strings.NewReader(`{"hook_event_name":"PreToolUse","session_id":"s1","tool_use_id":"t2","tool_name":"Bash","tool_input":{"command":"ls"}}`))
+	a.Observe(strings.NewReader(`not json`))
+	b, err := os.ReadFile(events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("want 2 lines (bad input is skipped), got %d: %s", len(lines), b)
+	}
+	var got struct {
+		TS             float64        `json:"ts"`
+		Event          string         `json:"event"`
+		SessionID      string         `json:"session_id"`
+		ToolUseID      string         `json:"tool_use_id"`
+		ToolName       string         `json:"tool_name"`
+		PermissionMode string         `json:"permission_mode"`
+		Raw            map[string]any `json:"raw"`
+	}
+	if err := json.Unmarshal([]byte(lines[0]), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Event != "PostToolUse" || got.SessionID != "s1" || got.ToolUseID != "t1" || got.ToolName != "Read" || got.PermissionMode != "auto" || got.TS != 1791719415.5 || got.Raw["hook_event_name"] != "PostToolUse" {
+		t.Fatalf("unexpected line: %s", lines[0])
+	}
+	if strings.Contains(lines[0], "sk-abc") || strings.Contains(lines[0], "hunter2") || !strings.Contains(lines[0], "12345678901234567890") {
+		t.Fatalf("secrets must be redacted and numbers kept exact: %s", lines[0])
+	}
+	if st, _ := os.Stat(events); st.Mode().Perm() != 0o600 {
+		t.Fatalf("events file mode %v", st.Mode().Perm())
+	}
+	// no events file configured: nothing is written and nothing fails
+	New(hosts.Env{Home: dir, Getenv: func(string) string { return "" }, Now: time.Now, Stderr: &bytes.Buffer{}}).Observe(strings.NewReader(`{"hook_event_name":"PostToolUse"}`))
 }

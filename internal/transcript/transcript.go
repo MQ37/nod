@@ -205,6 +205,92 @@ func userCount(msgs []api.Turn) int {
 	return n
 }
 
+// userScanChunk and userScanMax bound how far back UserTexts reads: a session with verbose tool output
+// can have its last human messages far from the end of a multi-hundred-megabyte transcript.
+var (
+	userScanChunk int64 = 1 << 20
+	userScanMax   int64 = 64 << 20
+)
+
+// UserTexts returns up to n of the most recent real user messages of the session at path, oldest first,
+// each clipped to ClipLen. It reads the file backwards in chunks until it has n messages or has read
+// userScanMax bytes, so it returns fewer when the session has fewer; an unreadable transcript gives nil.
+func UserTexts(path string, n int) []string {
+	if n <= 0 {
+		return nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return nil
+	}
+	var newest []string // newest first
+	var rest []byte     // the incomplete first line of the chunk read before this one
+	off, scanned := st.Size(), int64(0)
+	for off > 0 && len(newest) < n && scanned < userScanMax {
+		size := userScanChunk
+		if size > off {
+			size = off
+		}
+		off -= size
+		scanned += size
+		buf := make([]byte, size)
+		if _, err := f.ReadAt(buf, off); err != nil && err != io.EOF {
+			return reverse(newest)
+		}
+		buf = append(buf, rest...)
+		lines := bytes.Split(buf, []byte{'\n'})
+		if off > 0 { // the first line may be cut: keep it for the next, older chunk
+			rest, lines = lines[0], lines[1:]
+		} else {
+			rest = nil
+		}
+		for k := len(lines) - 1; k >= 0 && len(newest) < n; k-- {
+			if !bytes.Contains(lines[k], []byte(`"user"`)) {
+				continue
+			}
+			if got := userTextsFromLines([]string{string(lines[k])}, 1); len(got) == 1 {
+				newest = append(newest, got[0])
+			}
+		}
+	}
+	return reverse(newest)
+}
+
+func reverse(s []string) []string {
+	for i, j := 0, len(s)-1; i < j; i, j = i+1, j-1 {
+		s[i], s[j] = s[j], s[i]
+	}
+	return s
+}
+
+func userTextsFromLines(lines []string, n int) []string {
+	var out []string
+	for _, ln := range lines {
+		ln = strings.TrimSpace(ln)
+		if ln == "" {
+			continue
+		}
+		var d line
+		if json.Unmarshal([]byte(ln), &d) != nil || d.IsSidechain || d.IsMeta || d.Type != "user" || d.Message == nil {
+			continue
+		}
+		u := textOf(d.Message.Content)
+		if u == "" || strings.HasPrefix(u, "<") {
+			continue
+		}
+		out = append(out, ClipHead(u, ClipLen))
+	}
+	if len(out) > n {
+		out = out[len(out)-n:]
+	}
+	return out
+}
+
 // LastUserTask is the most recent real user message of the session (clipped), or "" when unavailable.
 func LastUserTask(path string) string {
 	lines, err := tailLines(path, taskBytes)

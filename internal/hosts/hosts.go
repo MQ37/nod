@@ -56,6 +56,8 @@ type Env struct {
 	Now           func() time.Time    // clock (backups, logs)
 	RuntimeDir    string              // RAM-only scratch directory ($XDG_RUNTIME_DIR/nod)
 	AuditDir      string              // persistent audit trail directory; "" = $NOD_AUDIT_DIR or $XDG_STATE_HOME/nod/audit
+	EventsFile    string              // where the Claude Code observer hook appends raw hook events
+	AuditContext  int                 // previous user messages stored with a verdict (Claude Code hook); 0 = none
 	AuditCommands string              // what the audit trail stores of a command: full (default) | preview | hash
 	Mode          func() string       // current mode: "shadow" | "enforce" (stored in the nod config)
 	URL           string              // server URL written to host config (Hermes env file); "" = host default

@@ -16,8 +16,9 @@ import (
 // Name of the host.
 const Name = "claude"
 
-// ObserverEvents are the optional events recorded by `nod hook claude --observe`.
-var ObserverEvents = []string{"PostToolUse", "PostToolUseFailure", "PermissionRequest", "PermissionDenied"}
+// ObserverEvents are the optional events recorded raw by `nod hook claude --observe` (PreToolUse for all tools
+// next to the gate that covers the matcher, then what happened to each call).
+var ObserverEvents = []string{"PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionRequest", "PermissionDenied"}
 
 // Adapter implements hosts.Host.
 type Adapter struct{ Env hosts.Env }

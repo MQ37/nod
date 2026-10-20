@@ -4,6 +4,7 @@ package hooksintegration
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/user"
 	"strings"
@@ -17,8 +18,8 @@ import (
 )
 
 func init() {
-	cli.Register("hook", cli.Command{Name: "hook", Summary: "answer one host hook event", Usage: "hook <claude|hermes|pi|opencode> [--warm]", Flags: []cli.Flag{{Name: "warm", Kind: cli.Bool, Usage: "warm the server at Claude SessionStart"}}, Run: runHook})
-	cli.Register("hooks", cli.Command{Name: "hooks", Summary: "install, remove or inspect host hooks", Usage: "hooks <install|remove|status> [--host H] [--matcher TOOL] [--warm] [--dry-run] [--yes]", Flags: []cli.Flag{{Name: "host", Kind: cli.String, Arg: "H", Usage: "comma-separated hosts"}, {Name: "matcher", Kind: cli.String, Default: "Bash", Arg: "TOOL", Usage: "Claude Code matcher"}, {Name: "warm", Kind: cli.Bool, Usage: "install Claude SessionStart model warm hook"}, {Name: "dry-run", Kind: cli.Bool, Usage: "print plan without applying"}}, Run: runHooks})
+	cli.Register("hook", cli.Command{Name: "hook", Summary: "answer one host hook event", Usage: "hook <claude|hermes|pi|opencode> [--warm|--observe]", Flags: []cli.Flag{{Name: "warm", Kind: cli.Bool, Usage: "warm the server at Claude SessionStart"}, {Name: "observe", Kind: cli.Bool, Usage: "record the raw hook event (Claude Code observer hook); classify nothing"}}, Run: runHook})
+	cli.Register("hooks", cli.Command{Name: "hooks", Summary: "install, remove or inspect host hooks", Usage: "hooks <install|remove|status> [--host H] [--matcher TOOL] [--warm] [--observers] [--dry-run] [--yes]", Flags: []cli.Flag{{Name: "host", Kind: cli.String, Arg: "H", Usage: "comma-separated hosts"}, {Name: "matcher", Kind: cli.String, Default: "Bash", Arg: "TOOL", Usage: "Claude Code matcher"}, {Name: "warm", Kind: cli.Bool, Usage: "install Claude SessionStart model warm hook"}, {Name: "observers", Kind: cli.Bool, Usage: "also install the Claude Code observer hooks that record every raw event"}, {Name: "dry-run", Kind: cli.Bool, Usage: "print plan without applying"}}, Run: runHooks})
 }
 
 func paths(c *cli.Context) (config.Paths, config.Config, error) {
@@ -35,8 +36,21 @@ func paths(c *cli.Context) (config.Paths, config.Config, error) {
 	return p, cfg, err
 }
 func hostEnv(c *cli.Context, cfg config.Config, p config.Paths) hosts.Env {
+	return hostEnvFor(c, cfg, p, "")
+}
+
+// hostEnvFor is hostEnv for one host: the Claude Code hook may run in its own mode (claude_mode), and
+// with agent review the plugins talk to the local server, never to a remote that only serves Claude Code.
+func hostEnvFor(c *cli.Context, cfg config.Config, p config.Paths, host string) hosts.Env {
+	if host == "claude" && cfg.ClaudeMode != "" {
+		cfg.Mode = cfg.ClaudeMode
+	}
+	url := cfg.ServerURL()
+	if cfg.Model == "agent" {
+		url = cfg.LocalURL()
+	}
 	h, _ := os.UserHomeDir()
-	return hosts.Env{Home: h, Getenv: c.Getenv, Now: time.Now, RuntimeDir: p.RuntimeDir, AuditDir: p.Audit(cfg), AuditCommands: cfg.AuditCommands, Mode: func() string { return cfg.Mode }, URL: cfg.ServerURL(), OnError: cfg.OnUnreachable, Stderr: c.Stderr}
+	return hosts.Env{Home: h, Getenv: c.Getenv, Now: time.Now, RuntimeDir: p.RuntimeDir, AuditDir: p.Audit(cfg), AuditCommands: cfg.AuditCommands, AuditContext: cfg.AuditContext, EventsFile: p.Events(cfg), Mode: func() string { return cfg.Mode }, URL: url, OnError: cfg.OnUnreachable, Stderr: c.Stderr}
 }
 func classifier(cfg config.Config, p config.Paths) api.Classifier {
 	return cli.NewClassifier(cfg, p)
@@ -67,10 +81,18 @@ func runHook(c *cli.Context) int {
 		}
 		return cli.ExitOK
 	}
-	h, err := registry.Get(hostEnv(c, cfg, p), c.Args[0])
+	h, err := registry.Get(hostEnvFor(c, cfg, p, c.Args[0]), c.Args[0])
 	if err != nil {
 		c.Errorf("%v", err)
 		return cli.ExitUsage
+	}
+	if c.Flags.Bool("observe") {
+		o, ok := h.(interface{ Observe(io.Reader) int })
+		if !ok {
+			c.Errorf("--observe is only supported for claude")
+			return cli.ExitUsage
+		}
+		return o.Observe(c.Stdin)
 	}
 	return h.Hook(c.Stdin, c.Stdout, classifier(cfg, p))
 }
@@ -84,23 +106,25 @@ func runHooks(c *cli.Context) int {
 		c.Errorf("%v", err)
 		return cli.ExitUsage
 	}
-	env := hostEnv(c, cfg, p)
 	names := c.Flags.String("host")
 	var hs []hosts.Host
 	if names == "" {
 		if c.Args[0] == "install" {
-			h, e := registry.Get(env, "claude")
+			h, e := registry.Get(hostEnvFor(c, cfg, p, "claude"), "claude")
 			if e != nil {
 				c.Errorf("%v", e)
 				return cli.ExitUsage
 			}
 			hs = []hosts.Host{h}
 		} else {
-			hs = registry.All(env)
+			for _, n := range registry.Names {
+				h, _ := registry.Get(hostEnvFor(c, cfg, p, n), n)
+				hs = append(hs, h)
+			}
 		}
 	} else {
 		for _, n := range strings.Split(names, ",") {
-			h, e := registry.Get(env, strings.TrimSpace(n))
+			h, e := registry.Get(hostEnvFor(c, cfg, p, strings.TrimSpace(n)), strings.TrimSpace(n))
 			if e != nil {
 				c.Errorf("%v", e)
 				return cli.ExitUsage
@@ -147,14 +171,14 @@ func runHooks(c *cli.Context) int {
 		}
 		return cli.ExitOK
 	case "install":
-		opts := hosts.Options{Matcher: c.Flags.String("matcher"), Warm: c.Flags.Bool("warm")}
+		opts := hosts.Options{Matcher: c.Flags.String("matcher"), Warm: c.Flags.Bool("warm"), Observers: c.Flags.Bool("observers")}
 		if cfg.Model == "agent" {
 			opts.Review = "agent"
 		}
 		plans := make([]hosts.Plan, 0, len(hs))
 		for _, h := range hs {
-			if cfg.Model == "agent" && h.Name() != "hermes" && h.Name() != "opencode" {
-				c.Errorf("%s cannot use agent review (its hook cannot call the agent's model); use a Decider model for it", h.Name())
+			if cfg.Model == "agent" && h.Name() != "hermes" && h.Name() != "opencode" && !(h.Name() == "claude" && cfg.Remote != "") {
+				c.Errorf("%s cannot use agent review (its hook cannot call the agent's model); use a Decider model for it (for claude, set a remote Decider with `nod config set remote URL`)", h.Name())
 				return cli.ExitUsage
 			}
 			plan, e := h.PlanInstall(opts)

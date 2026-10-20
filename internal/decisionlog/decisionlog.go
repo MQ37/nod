@@ -56,7 +56,8 @@ type Entry struct {
 	Error         string    `json:"error,omitempty"`
 	Cwd           string    `json:"cwd,omitempty"`
 	Reason        string    `json:"reason,omitempty"`
-	Prev          string    `json:"prev,omitempty"` // sha256 of the previous line, set by Append
+	Context       []string  `json:"context,omitempty"` // the user's previous messages (oldest first), redacted and clipped
+	Prev          string    `json:"prev,omitempty"`    // sha256 of the previous line, set by Append
 }
 
 // Writer appends entries. Safe across goroutines and processes (an flock serialises appenders).

@@ -47,6 +47,24 @@ func clipRunes(s string, n int) string {
 	return string(r[:n]) + "…"
 }
 
+// ContextLen is the clip of one stored user message.
+const ContextLen = 300
+
+// ContextFields redacts and clips the user messages stored with a verdict, keeping at most n of the
+// newest. Empty messages are dropped.
+func ContextFields(msgs []string, n int) []string {
+	var out []string
+	for _, m := range msgs {
+		if m = strings.TrimSpace(m); m != "" {
+			out = append(out, clipRunes(Redact(m), ContextLen))
+		}
+	}
+	if n >= 0 && len(out) > n {
+		out = out[len(out)-n:]
+	}
+	return out
+}
+
 // SHA256 is the hex sha256 of the original (unredacted) command, so a known command can be matched to
 // its audit line without trusting the stored text.
 func SHA256(s string) string {

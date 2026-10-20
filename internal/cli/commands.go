@@ -751,6 +751,7 @@ func runInstall(c *Context) int {
 	hostEnv.RuntimeDir = p.RuntimeDir
 	hostEnv.AuditDir = p.Audit(installCfg)
 	hostEnv.AuditCommands = installCfg.AuditCommands
+	hostEnv.AuditContext = installCfg.AuditContext
 	// Host plugins are configured with the server and mode being installed, not with defaults.
 	installURL := strings.TrimRight(c.Flags.String("remote"), "/")
 	if installURL == "" {

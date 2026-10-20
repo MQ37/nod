@@ -78,6 +78,15 @@ func (p Paths) Audit(cfg Config) string {
 	return p.AuditDir
 }
 
+// Events is the file the Claude Code observer hook appends raw events to: the config's events_file, else
+// <data dir>/events.jsonl.
+func (p Paths) Events(cfg Config) string {
+	if cfg.EventsFile != "" {
+		return cfg.EventsFile
+	}
+	return filepath.Join(p.DataDir, "events.jsonl")
+}
+
 // ModelsDir is where model GGUFs are stored.
 func (p Paths) ModelsDir() string { return filepath.Join(p.DataDir, "models") }
 
@@ -101,6 +110,9 @@ type Config struct {
 	RemoteFallback string `json:"remote_fallback"`  // with a remote set: local = fall back to the local daemon when the remote is down; none = ask
 	LocalPower     string `json:"local_power"`      // when the local model may run: plugged | always | never
 	AuditDir       string `json:"audit_dir"`        // persistent audit trail directory (empty = $XDG_STATE_HOME/nod/audit)
+	EventsFile     string `json:"events_file"`      // where `nod hook claude --observe` appends the raw hook events (absolute; "" = <data dir>/events.jsonl)
+	ClaudeMode     string `json:"claude_mode"`      // mode for the Claude Code hook when it should differ from mode: shadow | enforce ("" = same as mode)
+	AuditContext   int    `json:"audit_context"`    // how many of the user's previous messages the audit stores with each Claude Code verdict (0 = none)
 	AuditCommands  string `json:"audit_commands"`   // what the audit trail stores of a command: full (default, redacted) | preview | hash
 	Engine         string `json:"engine"`           // hybrid (tiers + rules + model) | model (the model judges every call)
 	LogCommands    bool   `json:"log_commands"`     // also log command text in the verdict log
@@ -109,7 +121,7 @@ type Config struct {
 // Default returns the default configuration.
 func Default() Config {
 	return Config{
-		Addr: "127.0.0.1:11096", OnUnreachable: "ask", Engine: "model", AuditCommands: "full", RemoteFallback: "local", LocalPower: "plugged", Mode: "shadow", TimeoutSecs: 10, IdleUnloadSecs: 900, WarmWaitSecs: 5, ServiceName: "nod",
+		Addr: "127.0.0.1:11096", OnUnreachable: "ask", Engine: "model", AuditCommands: "full", AuditContext: 10, RemoteFallback: "local", LocalPower: "plugged", Mode: "shadow", TimeoutSecs: 10, IdleUnloadSecs: 900, WarmWaitSecs: 5, ServiceName: "nod",
 	}
 }
 
@@ -216,10 +228,23 @@ var keys = map[string]key{
 		return nil
 	}),
 	"audit_commands": strKey(func(c *Config) *string { return &c.AuditCommands }, enum("audit_commands", "full", "preview", "hash")),
-	"engine":         strKey(func(c *Config) *string { return &c.Engine }, enum("engine", "hybrid", "model")),
-	"mode":           strKey(func(c *Config) *string { return &c.Mode }, enum("mode", "shadow", "enforce")),
-	"shadow_until":   strKey(func(c *Config) *string { return &c.ShadowUntil }, nil),
-	"timeout_secs":   intKey("timeout_secs", func(c *Config) *int { return &c.TimeoutSecs }, 1),
+	"events_file": strKey(func(c *Config) *string { return &c.EventsFile }, func(v string) error {
+		if v != "" && !filepath.IsAbs(v) {
+			return errors.New("events_file must be an absolute path")
+		}
+		return nil
+	}),
+	"claude_mode": strKey(func(c *Config) *string { return &c.ClaudeMode }, func(v string) error {
+		if v == "" {
+			return nil
+		}
+		return enum("claude_mode", "shadow", "enforce")(v)
+	}),
+	"audit_context": intKey("audit_context", func(c *Config) *int { return &c.AuditContext }, 0),
+	"engine":        strKey(func(c *Config) *string { return &c.Engine }, enum("engine", "hybrid", "model")),
+	"mode":          strKey(func(c *Config) *string { return &c.Mode }, enum("mode", "shadow", "enforce")),
+	"shadow_until":  strKey(func(c *Config) *string { return &c.ShadowUntil }, nil),
+	"timeout_secs":  intKey("timeout_secs", func(c *Config) *int { return &c.TimeoutSecs }, 1),
 	"log_commands": {
 		get: func(c *Config) string { return strconv.FormatBool(c.LogCommands) },
 		set: func(c *Config, v string) error {

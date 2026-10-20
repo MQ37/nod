@@ -151,3 +151,14 @@ func TestReadLastSpansRotatedFiles(t *testing.T) {
 		t.Fatalf("n=%d err=%v", len(es), err)
 	}
 }
+
+func TestContextFieldsRedactsClipsAndKeepsNewest(t *testing.T) {
+	long := strings.Repeat("x", 500)
+	got := ContextFields([]string{"old", " ", "my key is sk-abcdefghijklmnopqrstuv please", long, "last"}, 3)
+	if len(got) != 3 || got[0] != "my key is <tok> please" || got[2] != "last" || len([]rune(got[1])) != ContextLen+1 {
+		t.Fatalf("got %q", got)
+	}
+	if ContextFields(nil, 10) != nil || len(ContextFields([]string{"a"}, 0)) != 0 {
+		t.Fatal("empty input or n=0 must give nothing")
+	}
+}

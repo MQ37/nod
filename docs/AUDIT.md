@@ -35,6 +35,7 @@ One JSON object per line:
 | `decision`, `source`, `reason`, `category` | what Nod answered and why. `source` is `model`, `agent`, `tier`, `unreachable`, `error` or `not-gated` |
 | `model` | in agent review, the model that did the review |
 | `ms`, `error`, `cwd` | review time, a short error when the review failed (the answer is then `ask`), working directory |
+| `context` | Claude Code only: the user's previous messages (up to `audit_context`, default 10; newest last), redacted and clipped to 300 characters each. Only what the user typed: never assistant or tool text |
 | `prev` | sha256 of the previous line (the chain) |
 
 Calls a host plugin sees but does not judge are recorded too, with `decision: "unchecked"` and `source: "not-gated"`, so the trail shows everything the agent did and which part Nod did not review. Coverage is whatever the host lets the plugin see: for example Claude Code's hook is installed for `Bash` by default, so other Claude tools do not appear unless you widen the matcher.
@@ -57,3 +58,7 @@ What it proves: lines in the middle were not changed, removed, inserted or reord
 ## Writing
 
 Appends from several processes are serialised with a lock and written in one piece. Logging never changes an answer: if the directory is not writable, the verdict still goes out and one warning is printed.
+
+## Raw hook events (Claude Code)
+
+Separately from the audit trail, `nod hooks install --host claude --observers` records every raw hook event into `events_file` (see [CONFIG.md](CONFIG.md)). That file is a plain append-only log without the hash chain, and it includes tool inputs and responses (redacted by the same patterns), so it grows quickly and should be treated as sensitive.
